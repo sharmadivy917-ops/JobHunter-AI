@@ -116,15 +116,15 @@ def get_email_html(cfg, company, role, hr_name):
 
         <p>I hope this message finds you well. I am writing to express my keen interest in the
         <strong>{role}</strong> position at <strong>{company}</strong>.
-        As a <strong>passionate developer</strong> skilled in <strong>{cfg['skills']}</strong>,
+        As a <strong>passionate {cfg.get('title', 'professional')}</strong> skilled in <strong>{cfg['skills']}</strong>,
         I am eager to contribute meaningfully to your team.</p>
 
         <p>Here are some highlights of my profile:</p>
 
         <ul style="padding-left:20px;color:#333;">
             <li>Proficient in <strong>{cfg['skills']}</strong></li>
-            <li>Built <strong>automation tools and full-stack projects</strong> independently</li>
-            <li>Strong problem-solving skills with a focus on <strong>clean, scalable code</strong></li>
+            <li>Proven ability to deliver <strong>high-quality projects and solutions</strong> independently</li>
+            <li>Strong problem-solving skills with a focus on <strong>efficiency and accuracy</strong></li>
             <li>Quick learner with a <strong>passion for continuous improvement</strong></li>
             <li>Open to <strong>on-site, hybrid, and remote</strong> work arrangements</li>
         </ul>
@@ -149,11 +149,12 @@ def get_email_html(cfg, company, role, hr_name):
 
 def get_email_plain(cfg, company, role, hr_name):
     """Plain text fallback."""
+    title = cfg.get('title', 'professional')
     return f"""Dear {hr_name},
 
 I am writing to express my interest in the {role} position at {company}.
 
-As a developer skilled in {cfg['skills']}, I would love the opportunity to contribute to your team.
+As a passionate {title} skilled in {cfg['skills']}, I would love the opportunity to contribute to your team.
 
 I have attached my resume for your review.
 
