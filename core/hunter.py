@@ -393,6 +393,54 @@ def hunt_for_companies():
     print(f"Search queries: {len(queries)}")
     print(f"Bounced domains: {len(bounced)}\n")
 
+    # ── HARDCODED MNC SEED LIST ────────────────
+    if company_size.lower() == 'mnc':
+        hardcoded_mncs = [
+            ("Tata Consultancy Services", "careers@tcs.com"),
+            ("Infosys", "talent@infosys.com"),
+            ("Wipro", "careers@wipro.com"),
+            ("Accenture", "india.careers@accenture.com"),
+            ("Cognizant", "careers@cognizant.com"),
+            ("Capgemini", "careers.in@capgemini.com"),
+            ("IBM", "ibmindia.careers@in.ibm.com"),
+            ("HCL Technologies", "careers@hcl.com"),
+            ("Tech Mahindra", "careers@techmahindra.com"),
+            ("Larsen & Toubro", "talentconnex@larsentoubro.com"),
+            ("Deloitte", "careers@deloitte.com"),
+            ("PwC", "careers.india@pwc.com"),
+            ("EY (Ernst & Young)", "ey.careers@in.ey.com"),
+            ("KPMG", "india.careers@kpmg.com"),
+            ("Amazon", "hiring@amazon.com"),
+            ("Microsoft", "askhr@microsoft.com"),
+            ("Google", "careers@google.com"),
+            ("Meta", "careers@meta.com"),
+            ("Apple", "careers@apple.com"),
+            ("Oracle", "careers@oracle.com"),
+        ]
+        
+        file_exists = os.path.exists(FIRMS_CSV)
+        with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes'])
+            if not file_exists:
+                writer.writeheader()
+            
+            added_count = 0
+            for name, email in hardcoded_mncs:
+                if email not in existing_emails and email.split('@')[1] not in bounced:
+                    writer.writerow({
+                        'company_name': name,
+                        'contact_email': email,
+                        'role': roles[0] if roles else 'Software Engineer',
+                        'hr_name': 'Talent Acquisition',
+                        'notes': f"Hardcoded Top MNC (Role: {roles[0] if roles else 'Any'})"
+                    })
+                    existing_emails.add(email)
+                    added_count += 1
+        
+        if added_count > 0:
+            print(f"[!] Injected {added_count} top hardcoded MNCs directly into leads.")
+            print(f"[!] Proceeding to search for more...\n")
+
     session = _make_session()
     new_firms = []
     visited_urls = set()
