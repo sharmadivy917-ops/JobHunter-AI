@@ -395,28 +395,56 @@ def hunt_for_companies():
 
     # ── HARDCODED MNC SEED LIST ────────────────
     if company_size.lower() == 'mnc':
-        hardcoded_mncs = [
-            ("Tata Consultancy Services", "careers@tcs.com"),
-            ("Infosys", "talent@infosys.com"),
-            ("Wipro", "careers@wipro.com"),
-            ("Accenture", "india.careers@accenture.com"),
-            ("Cognizant", "careers@cognizant.com"),
-            ("Capgemini", "careers.in@capgemini.com"),
-            ("IBM", "ibmindia.careers@in.ibm.com"),
-            ("HCL Technologies", "careers@hcl.com"),
-            ("Tech Mahindra", "careers@techmahindra.com"),
-            ("Larsen & Toubro", "talentconnex@larsentoubro.com"),
-            ("Deloitte", "careers@deloitte.com"),
-            ("PwC", "careers.india@pwc.com"),
-            ("EY (Ernst & Young)", "ey.careers@in.ey.com"),
-            ("KPMG", "india.careers@kpmg.com"),
-            ("Amazon", "hiring@amazon.com"),
-            ("Microsoft", "askhr@microsoft.com"),
-            ("Google", "careers@google.com"),
-            ("Meta", "careers@meta.com"),
-            ("Apple", "careers@apple.com"),
-            ("Oracle", "careers@oracle.com"),
-        ]
+        role_str = roles[0].lower() if roles else ""
+        
+        if any(k in role_str for k in ["mechanical", "civil", "electrical", "core", "manufacturing", "production", "design"]):
+            hardcoded_mncs = [
+                ("Larsen & Toubro", "talentconnex@larsentoubro.com"),
+                ("Tata Motors", "careers@tatamotors.com"),
+                ("Mahindra & Mahindra", "careers@mahindra.com"),
+                ("General Electric", "careers@ge.com"),
+                ("Siemens", "careers.in@siemens.com"),
+                ("Bosch", "careers@in.bosch.com"),
+                ("Cummins", "careers@cummins.com"),
+                ("Boeing", "careers@boeing.com"),
+                ("Ford", "careers@ford.com"),
+                ("Hyundai", "careers@hmil.net"),
+                ("Maruti Suzuki", "careers@maruti.co.in"),
+                ("Adani Group", "careers@adani.com"),
+                ("Reliance Industries", "careers@ril.com"),
+                ("Godrej", "careers@godrej.com"),
+            ]
+        elif any(k in role_str for k in ["finance", "account", "bank", "audit", "tax"]):
+            hardcoded_mncs = [
+                ("Deloitte", "careers@deloitte.com"),
+                ("PwC", "careers.india@pwc.com"),
+                ("EY", "ey.careers@in.ey.com"),
+                ("KPMG", "india.careers@kpmg.com"),
+                ("Goldman Sachs", "careers@gs.com"),
+                ("JP Morgan", "careers@jpmorgan.com"),
+                ("Morgan Stanley", "careers@morganstanley.com"),
+                ("Citibank", "careers@citi.com"),
+                ("HSBC", "careers@hsbc.com"),
+                ("Standard Chartered", "careers@sc.com"),
+                ("Barclays", "careers@barclays.com"),
+            ]
+        else:
+            hardcoded_mncs = [
+                ("Tata Consultancy Services", "careers@tcs.com"),
+                ("Infosys", "talent@infosys.com"),
+                ("Wipro", "careers@wipro.com"),
+                ("Accenture", "india.careers@accenture.com"),
+                ("Cognizant", "careers@cognizant.com"),
+                ("Capgemini", "careers.in@capgemini.com"),
+                ("IBM", "ibmindia.careers@in.ibm.com"),
+                ("HCL Technologies", "careers@hcl.com"),
+                ("Tech Mahindra", "careers@techmahindra.com"),
+                ("Amazon", "hiring@amazon.com"),
+                ("Microsoft", "askhr@microsoft.com"),
+                ("Google", "careers@google.com"),
+                ("Meta", "careers@meta.com"),
+                ("Apple", "careers@apple.com"),
+            ]
         
         file_exists = os.path.exists(FIRMS_CSV)
         with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
