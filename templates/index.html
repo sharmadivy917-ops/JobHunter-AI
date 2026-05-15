@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>JobHunter-AI</title>
+<meta name="description" content="AI-powered autonomous job application engine" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+<div class="toast-container" id="toast-container"></div>
+
+<div class="shell">
+  <!-- ── SIDEBAR ── -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="wordmark">Job<span>Hunter</span></div>
+      <div class="tagline">AI · Outreach Engine</div>
+    </div>
+
+    <div class="sidebar-section-label">Modules</div>
+
+    <div class="nav-item active" data-tab="dashboard">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      <span class="nav-label">Dashboard</span>
+    </div>
+    <div class="nav-item" data-tab="hunter">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <span class="nav-label">Hunter</span>
+    </div>
+    <div class="nav-item" data-tab="sender">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      <span class="nav-label">Sender</span>
+    </div>
+    <div class="nav-item" data-tab="leads">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      <span class="nav-label">Leads</span>
+    </div>
+    <div class="nav-item" data-tab="bounces">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span class="nav-label">Bounces</span>
+    </div>
+
+    <div class="sidebar-section-label">Config</div>
+    <div class="nav-item" data-tab="settings">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span class="nav-label">Settings</span>
+    </div>
+
+    <div class="sidebar-status">
+      <div class="status-row">
+        <span class="status-key">Engine</span>
+        <span class="status-val"><span class="dot" id="engine-dot"></span><span id="engine-text">Idle</span></span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Queue</span>
+        <span class="status-val" id="sb-queue">&mdash;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Sent</span>
+        <span class="status-val" id="sb-sent">&mdash;</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── MAIN ── -->
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-title" id="topbar-title">Dashboard</div>
+      <div class="topbar-meta">
+        <span class="chip live" id="live-chip">&#9679; LIVE</span>
+        <span class="chip" id="time-chip">--:--:--</span>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- ══ DASHBOARD ══ -->
+      <div class="tab-pane active" id="pane-dashboard">
+        <div class="stat-grid">
+          <div class="stat-box a1"><div class="stat-num" id="stat-total">0</div><div class="stat-label">Total Leads</div></div>
+          <div class="stat-box a3"><div class="stat-num" id="stat-sent">0</div><div class="stat-label">Emails Sent</div></div>
+          <div class="stat-box a2"><div class="stat-num" id="stat-pending">0</div><div class="stat-label">Pending</div></div>
+          <div class="stat-box a4"><div class="stat-num" id="stat-bounced">0</div><div class="stat-label">Bounced</div></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Send Progress</span>
+            <span style="font-size:11px;color:var(--muted)" id="progress-pct">0%</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" id="progress-bar" style="width:0%"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Activity Log</span>
+            <button class="btn sm" id="clear-log-btn">Clear</button>
+          </div>
+          <div class="log-box" id="log-box">
+            <div class="log-line info"><span class="ts">[--:--:--]</span>JobHunter-AI initialised. Waiting for commands.</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Quick Actions</span></div>
+          <div class="btn-row">
+            <button class="btn primary" id="qa-hunt">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              Run Hunter
+            </button>
+            <button class="btn primary" id="qa-send">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              Send Emails
+            </button>
+            <button class="btn" id="qa-bounce">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+              Scan Bounces
+            </button>
+            <button class="btn danger" id="stop-btn" style="display:none">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+              Stop
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ HUNTER ══ -->
+      <div class="tab-pane" id="pane-hunter">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Find Firms by Role</span></div>
+          <p style="font-size:12px;color:var(--text-dim);margin-bottom:14px;line-height:1.7">
+            Enter any job role and the hunter will search the web for companies hiring that role, extracting HR/career emails automatically.
+          </p>
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">Job Roles (comma-separated)</label>
+              <input class="field-input" id="h-roles" placeholder="e.g. Python Developer, React Engineer, Data Scientist" />
+            </div>
+            <div class="field-group">
+              <label class="field-label">Locations</label>
+              <input class="field-input" id="h-locations" placeholder="e.g. Remote, India, New York" />
+            </div>
+            <div class="field-group">
+              <label class="field-label">Max Search Queries</label>
+              <input class="field-input" id="h-max" type="number" placeholder="20" value="20" />
+            </div>
+            <div class="field-group">
+              <label class="field-label">Delay Between Requests (sec)</label>
+              <input class="field-input" id="h-delay" type="number" placeholder="5" value="5" />
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn primary" id="start-hunt-btn">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Start Hunt
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Hunter Log</span></div>
+          <div class="log-box" id="hunter-log">
+            <div class="log-line info"><span class="ts">[ready]</span>Configure roles above and start the hunt.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ SENDER ══ -->
+      <div class="tab-pane" id="pane-sender">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Send Configuration</span></div>
+          <p style="font-size:12px;color:var(--text-dim);margin-bottom:14px;line-height:1.7">
+            Emails use a rich HTML template with your profile info from Settings. Configure sending parameters below.
+          </p>
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">Delay Between Sends (sec)</label>
+              <input class="field-input" id="s-delay" type="number" value="10" />
+            </div>
+            <div class="field-group">
+              <label class="field-label">Max Sends This Session</label>
+              <input class="field-input" id="s-max" type="number" value="30" />
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn primary" id="start-send-btn">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              Send Emails
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Sender Log</span></div>
+          <div class="log-box" id="sender-log">
+            <div class="log-line info"><span class="ts">[ready]</span>Configure and hit Send Emails.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ LEADS ══ -->
+      <div class="tab-pane" id="pane-leads">
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div class="card-header" style="padding:16px 20px 0">
+            <span class="card-title">firms.csv &mdash; Lead Database</span>
+            <div class="btn-row">
+              <button class="btn sm" id="add-lead-toggle-btn">+ Add Lead</button>
+              <button class="btn sm" id="refresh-leads-btn">&#8634; Refresh</button>
+              <button class="btn sm danger" id="clear-sent-btn">Clear Sent</button>
+            </div>
+          </div>
+          <div style="padding:12px 20px 0">
+            <input class="field-input" id="leads-search" placeholder="Search leads by company, email or role..." style="margin-bottom:0" />
+          </div>
+          <div style="overflow-x:auto;margin-top:12px;max-height:500px;overflow-y:auto;">
+            <table class="leads-table" id="leads-table">
+              <thead><tr><th>#</th><th>Company</th><th>Email</th><th>Role</th><th>Status</th><th>Source</th><th></th></tr></thead>
+              <tbody id="leads-body">
+                <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px">No leads loaded. Run the Hunter to discover companies.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ BOUNCES ══ -->
+      <div class="tab-pane" id="pane-bounces">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Bounce Handler</span></div>
+          <p style="font-size:12px;color:var(--text-dim);margin-bottom:14px;line-height:1.7">
+            Scans your Gmail inbox via IMAP for bounce-back messages. Flagged addresses are automatically removed from <code style="background:#090b0d;padding:1px 5px;border-radius:2px">firms.csv</code>.
+          </p>
+          <div class="btn-row">
+            <button class="btn primary" id="start-bounce-btn">Scan &amp; Clean</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Bounce Log</span></div>
+          <div class="log-box" id="bounce-log">
+            <div class="log-line info"><span class="ts">[ready]</span>Click Scan &amp; Clean to begin.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ SETTINGS ══ -->
+      <div class="tab-pane" id="pane-settings">
+        <div class="card">
+          <div class="settings-section">Identity</div>
+          <div class="form-grid">
+            <div class="field-group"><label class="field-label">Your Name</label><input class="field-input" id="cfg-name" placeholder="Divy Sharma" /></div>
+            <div class="field-group"><label class="field-label">Your Title / Role</label><input class="field-input" id="cfg-title" placeholder="Full Stack Developer" /></div>
+            <div class="field-group"><label class="field-label">Your Skills</label><input class="field-input" id="cfg-skills" placeholder="Python, React, ML, AI" /></div>
+            <div class="field-group"><label class="field-label">Resume Path</label><input class="field-input" id="cfg-resume" placeholder="C:\path\to\resume.pdf" /></div>
+            <div class="field-group"><label class="field-label">GitHub / Portfolio</label><input class="field-input" id="cfg-portfolio" placeholder="https://github.com/yourname" /></div>
+            <div class="field-group"><label class="field-label">LinkedIn</label><input class="field-input" id="cfg-linkedin" placeholder="https://linkedin.com/in/yourname" /></div>
+          </div>
+
+          <div class="settings-section">Gmail SMTP / IMAP</div>
+          <div class="form-grid">
+            <div class="field-group"><label class="field-label">Gmail Address</label><input class="field-input" id="cfg-gmail" type="email" placeholder="you@gmail.com" /></div>
+            <div class="field-group"><label class="field-label">App Password</label><input class="field-input" id="cfg-pass" type="password" placeholder="16-letter app password" /></div>
+          </div>
+
+          <div class="settings-section">Hunter Defaults</div>
+          <div class="form-grid">
+            <div class="field-group"><label class="field-label">Default Roles</label><input class="field-input" id="cfg-roles" placeholder="Python Developer, React Engineer" /></div>
+            <div class="field-group"><label class="field-label">Default Locations</label><input class="field-input" id="cfg-locations" placeholder="Remote, India" /></div>
+          </div>
+
+          <div class="settings-section">Sender Defaults</div>
+          <div class="form-grid">
+            <div class="field-group"><label class="field-label">Send Delay (sec)</label><input class="field-input" id="cfg-senddelay" type="number" value="10" /></div>
+            <div class="field-group"><label class="field-label">Max Sends per Day</label><input class="field-input" id="cfg-maxday" type="number" value="50" /></div>
+          </div>
+
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn primary" id="save-settings-btn">Save to .env</button>
+            <button class="btn" id="load-settings-btn">Reload from .env</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

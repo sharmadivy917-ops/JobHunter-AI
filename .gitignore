@@ -1,0 +1,32 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# User data (generated at runtime)
+firms.csv
+email_log.json
+bounced_domains.json
+seen_jobs.json
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.exe
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test files
+test_*.py
