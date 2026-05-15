@@ -97,15 +97,115 @@ def verify_mx(domain):
         return False
 
 
+def _get_role_context(role: str, cfg: dict) -> dict:
+    """Classify the role string into a category and return tailored copy blocks."""
+    role_lower = role.lower()
+
+    CATEGORIES = [
+        (["frontend", "front-end", "react", "vue", "angular", "ui", "ux", "css", "html"], "frontend"),
+        (["backend", "back-end", "django", "flask", "node", "api", "server", "sql", "postgres"], "backend"),
+        (["fullstack", "full-stack", "mern", "lamp"], "fullstack"),
+        (["data scientist", "machine learning", "ml", "ai", "deep learning", "nlp"], "ml"),
+        (["data analyst", "power bi", "tableau", "analytics", "reporting"], "data_analyst"),
+        (["devops", "sre", "cloud", "aws", "azure", "docker", "kubernetes", "ci/cd"], "devops"),
+        (["mechanical", "manufacturing", "production", "design engineer", "cad"], "mechanical"),
+        (["finance", "account", "audit", "tax", "banking"], "finance"),
+        (["marketing", "seo", "content", "social media"], "marketing"),
+        (["hr ", "human resources", "talent", "recruitment"], "hr"),
+    ]
+
+    category = "general"
+    for keywords, cat in CATEGORIES:
+        if any(kw in role_lower for kw in keywords):
+            category = cat
+            break
+
+    skills = cfg.get("skills", "")
+    title = cfg.get("title", "professional")
+
+    COPY = {
+        "frontend": {
+            "intro": f"I am reaching out to express my strong interest in the <strong>{role}</strong> position. As a frontend-focused developer, I specialise in crafting fast, accessible, and visually polished user interfaces using <strong>{skills}</strong>.",
+            "highlights": [
+                f"Expert in component-driven UI development with <strong>{skills}</strong>",
+                "Strong focus on Core Web Vitals, accessibility (WCAG), and responsive design",
+                "Experience integrating REST and GraphQL APIs into seamless user experiences",
+                "Open to <strong>on-site, hybrid, and remote</strong> engagements"
+            ]
+        },
+        "backend": {
+            "intro": f"I am writing to apply for the <strong>{role}</strong> position. I build robust, scalable server-side systems and APIs using <strong>{skills}</strong>, with a strong emphasis on reliability and clean architecture.",
+            "highlights": [
+                f"Proficient in <strong>{skills}</strong> for high-performance backend systems",
+                "Experienced in scalable API design, authentication, and database optimisation",
+                "Familiar with microservices, message queues, and cloud deployments",
+                "Open to <strong>on-site, hybrid, and remote</strong> work arrangements"
+            ]
+        },
+        "fullstack": {
+            "intro": f"I am excited to apply for the <strong>{role}</strong> role. I work across the full stack using <strong>{skills}</strong>, and I thrive in environments that value end-to-end ownership and velocity.",
+            "highlights": [
+                f"End-to-end development experience with <strong>{skills}</strong>",
+                "Ability to own features independently from architecture to deployment",
+                "Comfortable with CI/CD pipelines and cloud infrastructure",
+                "Open to <strong>on-site, hybrid, and remote</strong> work arrangements"
+            ]
+        },
+        "ml": {
+            "intro": f"I am writing to express my interest in the <strong>{role}</strong> position. I design and deploy machine learning systems using <strong>{skills}</strong>, with experience spanning model development and production serving.",
+            "highlights": [
+                f"Hands-on experience with <strong>{skills}</strong> for predictive modelling and data science",
+                "End-to-end ML pipelines: data ingestion → training → evaluation → deployment",
+                "Strong analytical mindset with a focus on delivering actionable insights",
+                "Open to <strong>on-site, hybrid, and remote</strong> work arrangements"
+            ]
+        },
+        "mechanical": {
+            "intro": f"I am writing to apply for the <strong>{role}</strong> position. As a dedicated engineering professional skilled in <strong>{skills}</strong>, I bring a strong background in mechanical design, analysis, and process optimisation.",
+            "highlights": [
+                f"Proficient in mechanical engineering tools and methodologies, including <strong>{skills}</strong>",
+                "Experience in CAD modelling, finite element analysis, and product lifecycle management",
+                "Strong focus on manufacturing efficiency, quality control, and safety standards",
+                "Open to <strong>on-site, hybrid, and remote</strong> work arrangements"
+            ]
+        },
+        "finance": {
+            "intro": f"I am excited to apply for the <strong>{role}</strong> position. With a strong foundation in financial analysis and strategy, and expertise in <strong>{skills}</strong>, I am well-equipped to support your team's financial goals.",
+            "highlights": [
+                f"Expertise in financial modelling, reporting, and <strong>{skills}</strong>",
+                "Strong understanding of compliance, risk management, and regulatory standards",
+                "Proven track record of data-driven forecasting and strategic planning",
+                "Open to <strong>on-site, hybrid, and remote</strong> work arrangements"
+            ]
+        },
+        "general": {
+            "intro": f"I am writing to express my keen interest in the <strong>{role}</strong> position. As a passionate <strong>{title}</strong> skilled in <strong>{skills}</strong>, I am eager to contribute meaningfully to your team.",
+            "highlights": [
+                f"Proficient in <strong>{skills}</strong> and highly adaptable to new tools",
+                "Proven ability to deliver high-quality projects and solutions independently",
+                "Strong problem-solving skills with a focus on efficiency and accuracy",
+                "Open to <strong>on-site, hybrid, and remote</strong> work arrangements"
+            ]
+        }
+    }
+    
+    # Fallback to general if category not fully defined
+    return COPY.get(category, COPY["general"])
+
+
 def get_email_html(cfg, company, role, hr_name):
     """Generate the rich HTML email body."""
     portfolio_btn = ""
     if cfg["portfolio"]:
-        portfolio_btn = f'<a href="{cfg["portfolio"]}" target="_blank" style="display:inline-block;background:#1A56A0;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;margin-right:10px;">GitHub Portfolio</a>'
+        portfolio_btn = f'<a href="{cfg["portfolio"]}" target="_blank" style="display:inline-block;background:#1A56A0;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;margin-right:10px;">Portfolio</a>'
 
     linkedin_btn = ""
     if cfg["linkedin"]:
         linkedin_btn = f'<a href="{cfg["linkedin"]}" target="_blank" style="display:inline-block;background:#0077B5;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">LinkedIn Profile</a>'
+
+    ctx = _get_role_context(role, cfg)
+    intro = ctx["intro"]
+    bullets = "".join(f"<li style='margin-bottom:6px;'>{h}</li>" for h in ctx["highlights"])
 
     return f"""
     <html>
@@ -114,27 +214,19 @@ def get_email_html(cfg, company, role, hr_name):
 
         <p style="margin-bottom:16px;">Dear {hr_name},</p>
 
-        <p>I hope this message finds you well. I am writing to express my keen interest in the
-        <strong>{role}</strong> position at <strong>{company}</strong>.
-        As a <strong>passionate {cfg.get('title', 'professional')}</strong> skilled in <strong>{cfg['skills']}</strong>,
-        I am eager to contribute meaningfully to your team.</p>
+        <p>{intro}</p>
 
         <p>Here are some highlights of my profile:</p>
 
         <ul style="padding-left:20px;color:#333;">
-            <li>Proficient in <strong>{cfg['skills']}</strong></li>
-            <li>Proven ability to deliver <strong>high-quality projects and solutions</strong> independently</li>
-            <li>Strong problem-solving skills with a focus on <strong>efficiency and accuracy</strong></li>
-            <li>Quick learner with a <strong>passion for continuous improvement</strong></li>
-            <li>Open to <strong>on-site, hybrid, and remote</strong> work arrangements</li>
+            {bullets}
         </ul>
 
         <p>I have attached my resume for your review.</p>
 
         <div style="margin:20px 0;">{portfolio_btn}{linkedin_btn}</div>
 
-        <p>I would welcome the opportunity to discuss how my background aligns with the needs of your team
-        at <strong>{company}</strong>. I am available for an interview at your earliest convenience.</p>
+        <p>I would welcome the opportunity to discuss how my background aligns with the needs of your team at <strong>{company}</strong>. I am available for an interview at your earliest convenience.</p>
 
         <p>Thank you for considering my application.</p>
 
@@ -149,14 +241,23 @@ def get_email_html(cfg, company, role, hr_name):
 
 def get_email_plain(cfg, company, role, hr_name):
     """Plain text fallback."""
-    title = cfg.get('title', 'professional')
+    import re
+    ctx = _get_role_context(role, cfg)
+    intro = re.sub(r"<[^>]+>", "", ctx["intro"])
+    bullets = "\n".join(f"  - {re.sub(r'<[^>]+>', '', h)}" for h in ctx["highlights"])
+
     return f"""Dear {hr_name},
 
-I am writing to express my interest in the {role} position at {company}.
+{intro}
 
-As a passionate {title} skilled in {cfg['skills']}, I would love the opportunity to contribute to your team.
+Profile highlights:
+{bullets}
 
 I have attached my resume for your review.
+
+I would welcome the opportunity to discuss how my background aligns with the needs of your team at {company}. I am available for an interview at your earliest convenience.
+
+Thank you for considering my application.
 
 Best regards,
 {cfg['name']}
