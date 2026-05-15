@@ -39,11 +39,11 @@ BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
 
 load_dotenv(ENV_FILE)
 
-EMAIL_REGEX = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}')
+EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b')
 
 VALID_EMAIL_KEYWORDS = ['hr@', 'career', 'job', 'join', 'talent', 'resume',
                         'recruit', 'hiring', 'info@', 'contact@', 'admin@',
-                        'office@', 'apply', 'enquir', 'support@']
+                        'office@', 'apply', 'enquir', 'support@', 'careers@']
 
 INVALID_DOMAINS = {'example.com', 'email.com', 'yourdomain.com', 'test.com',
                    'domain.com', 'sentry.io', 'wixpress.com', 'w3.org',
@@ -52,11 +52,11 @@ INVALID_DOMAINS = {'example.com', 'email.com', 'yourdomain.com', 'test.com',
                    'google.com', 'facebook.com', 'twitter.com', 'x.com',
                    'gstatic.com', 'gravatar.com', 'recaptcha.net',
                    'duckduckgo.com', 'bing.com', 'microsoft.com',
-                   'brave.com', 'yahoo.com', 'yandex.com'}
+                   'brave.com', 'yahoo.com', 'yandex.com', 'github.com'}
 
-GENERIC_PROVIDERS = {'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
-                     'protonmail.com', 'aol.com', 'live.com', 'icloud.com',
-                     'yahoo.co.in', 'rediffmail.com'}
+GENERIC_PROVIDERS = {'gmail', 'yahoo', 'outlook', 'hotmail',
+                     'protonmail', 'aol', 'live.com', 'icloud',
+                     'rediffmail'}
 
 SKIP_SITES = ['linkedin.com', 'indeed.com', 'glassdoor.com', 'youtube.com',
               'facebook.com', 'twitter.com', 'wikipedia.org', 'quora.com',
@@ -84,8 +84,8 @@ SIZE_KEYWORDS = {
     'startup': ['startup', 'early stage', 'seed funded', 'small team', 'bootstrap'],
     'small':   ['small company', 'growing company', 'SMB', 'small business'],
     'mid':     ['mid-size company', 'mid size', 'growing enterprise', 'scale-up'],
-    'large':   ['enterprise', 'large company', 'corporation', 'established'],
-    'mnc':     ['MNC', 'Fortune 500', 'multinational', 'global company', 'top company'],
+    'large':   ['"enterprise"', '"large company"', '"corporation"', '"established"'],
+    'mnc':     ['"Fortune 500"', '"global enterprise"', '"multinational"', '"top companies"', '"industry leader"'],
 }
 
 
@@ -153,7 +153,9 @@ def is_valid_email(email):
     if not EMAIL_REGEX.fullmatch(email):
         return False
     domain = email.split('@')[1]
-    if domain in INVALID_DOMAINS or domain in GENERIC_PROVIDERS:
+    if domain in INVALID_DOMAINS:
+        return False
+    if any(gp in domain for gp in GENERIC_PROVIDERS):
         return False
     if any(email.endswith(e) for e in BAD_EXTENSIONS):
         return False
