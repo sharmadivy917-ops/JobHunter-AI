@@ -287,9 +287,22 @@ def get_email_html(cfg, company, role, hr_name):
     closing = ctx["closing"]
 
     return f"""
+    <!DOCTYPE html>
     <html>
-    <body style="font-family:'Segoe UI',Arial,sans-serif;max-width:700px;margin:auto;padding:12px;color:#222;line-height:1.6;background-color:#f9f9f9;">
-        <div style="background-color:#fff;border-radius:8px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.05);">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            /* Responsive styling for mobile devices */
+            @media only screen and (max-width: 600px) {{
+                .email-body {{ padding: 12px !important; line-height: 1.6 !important; }}
+                .email-container {{ padding: 20px !important; border-radius: 4px !important; }}
+                .email-p {{ font-size: 15px !important; }}
+            }}
+        </style>
+    </head>
+    <body class="email-body" style="font-family:'Segoe UI',Arial,sans-serif;max-width:700px;margin:auto;padding:32px;color:#222;line-height:1.8;background-color:#f9f9f9;">
+        <div class="email-container" style="background-color:#fff;border-radius:8px;padding:40px;box-shadow:0 2px 4px rgba(0,0,0,0.05);">
             <div style="height:4px;background:linear-gradient(90deg,#1A56A0,#4A90D9,#6CB4EE);border-radius:4px;margin-bottom:28px;"></div>
 
             <p style="margin-bottom:16px;font-size:16px;">Dear {hr_name},</p>
