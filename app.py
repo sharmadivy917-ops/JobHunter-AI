@@ -322,6 +322,44 @@ def delete_lead(email):
     return jsonify({"ok": True})
 
 
+@app.route('/api/leads_bulk_delete', methods=['POST'])
+def delete_bulk_leads():
+    if not os.path.exists(FIRMS_CSV):
+        return jsonify({"ok": True})
+        
+    data = request.json or {}
+    emails_to_delete = set(e.lower().strip() for e in data.get('emails', []))
+    
+    if not emails_to_delete:
+        return jsonify({"ok": True})
+
+    rows = []
+    fieldnames = None
+    with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            if row.get('contact_email', '').lower().strip() not in emails_to_delete:
+                rows.append(row)
+
+    with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    add_log(f"Deleted {len(emails_to_delete)} selected leads", "ok")
+    return jsonify({"ok": True})
+
+
+@app.route('/api/clear_all_leads', methods=['POST'])
+def clear_all_leads():
+    if os.path.exists(FIRMS_CSV):
+        os.remove(FIRMS_CSV)
+    add_log("All leads cleared", "ok")
+    return jsonify({"ok": True})
+
+
+
 @app.route('/api/clear_sent', methods=['POST'])
 def clear_sent():
     if not os.path.exists(FIRMS_CSV):

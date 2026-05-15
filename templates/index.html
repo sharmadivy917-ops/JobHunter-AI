@@ -227,17 +227,30 @@
             <div class="btn-row">
               <button class="btn sm" id="add-lead-toggle-btn">+ Add Lead</button>
               <button class="btn sm" id="refresh-leads-btn">&#8634; Refresh</button>
+              <button class="btn sm danger" id="delete-selected-btn" style="display:none">Delete Selected</button>
+              <button class="btn sm danger" id="clear-all-btn">Clear All</button>
               <button class="btn sm danger" id="clear-sent-btn">Clear Sent</button>
             </div>
           </div>
-          <div style="padding:12px 20px 0">
-            <input class="field-input" id="leads-search" placeholder="Search leads by company, email or role..." style="margin-bottom:0" />
+          <div style="padding:12px 20px 0; display: flex; gap: 10px;">
+            <input class="field-input" id="leads-search" placeholder="Search leads by company, email or role..." style="margin-bottom:0; flex: 1;" />
+            <select class="field-input" id="leads-size-filter" style="margin-bottom:0; width: 200px;">
+              <option value="">All Firm Sizes</option>
+              <option value="Startup">Startup</option>
+              <option value="Small">Small</option>
+              <option value="Mid-size">Mid-size</option>
+              <option value="Enterprise">Enterprise</option>
+              <option value="MNC">MNC</option>
+            </select>
           </div>
           <div style="overflow-x:auto;margin-top:12px;max-height:500px;overflow-y:auto;">
             <table class="leads-table" id="leads-table">
-              <thead><tr><th>#</th><th>Company</th><th>Email</th><th>Role</th><th>Status</th><th>Source</th><th></th></tr></thead>
+              <thead><tr>
+                <th style="width: 40px; text-align: center;"><input type="checkbox" id="select-all-leads" style="cursor: pointer;" /></th>
+                <th>#</th><th>Company</th><th>Email</th><th>Role</th><th>Status</th><th>Source</th><th></th>
+              </tr></thead>
               <tbody id="leads-body">
-                <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px">No leads loaded. Run the Hunter to discover companies.</td></tr>
+                <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:28px">No leads loaded. Run the Hunter to discover companies.</td></tr>
               </tbody>
             </table>
           </div>

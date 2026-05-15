@@ -221,40 +221,64 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('refresh-leads-btn').addEventListener('click', refreshLeads);
   document.getElementById('clear-sent-btn').addEventListener('click', clearSent);
   document.getElementById('add-lead-toggle-btn').addEventListener('click', toggleAddLead);
+  document.getElementById('clear-all-btn').addEventListener('click', clearAllLeads);
+  document.getElementById('delete-selected-btn').addEventListener('click', deleteSelectedLeads);
+  
+  // Select All Checkbox
+  document.getElementById('select-all-leads').addEventListener('change', function() {
+    const isChecked = this.checked;
+    document.querySelectorAll('.lead-checkbox').forEach(cb => cb.checked = isChecked);
+    toggleDeleteSelectedBtn();
+  });
 
   // Search filter
-  document.getElementById('leads-search').addEventListener('input', function() {
-    renderLeads(this.value.toLowerCase());
-  });
+  document.getElementById('leads-search').addEventListener('input', updateLeadsView);
+  document.getElementById('leads-size-filter').addEventListener('change', updateLeadsView);
+  
+  function updateLeadsView() {
+    const searchVal = document.getElementById('leads-search').value.toLowerCase();
+    const sizeVal = document.getElementById('leads-size-filter').value.toLowerCase();
+    renderLeads(searchVal, sizeVal);
+  }
 
   async function refreshLeads() {
     const d = await apiGet('/api/leads');
     if (d.error) { toast('Failed to load leads', 'err'); return; }
     allLeads = d.leads || [];
-    renderLeads('');
+    renderLeads('', '');
     document.getElementById('leads-search').value = '';
+    document.getElementById('leads-size-filter').value = '';
   }
 
-  function renderLeads(filter) {
+  function renderLeads(searchFilter, sizeFilter) {
     const tbody = document.getElementById('leads-body');
     let leads = allLeads;
 
-    if (filter) {
+    if (searchFilter || sizeFilter) {
       leads = leads.filter(function(l) {
-        return (l.company || '').toLowerCase().includes(filter)
-            || (l.email || '').toLowerCase().includes(filter)
-            || (l.role || '').toLowerCase().includes(filter);
+        const matchesSearch = !searchFilter || 
+            (l.company || '').toLowerCase().includes(searchFilter) || 
+            (l.email || '').toLowerCase().includes(searchFilter) || 
+            (l.role || '').toLowerCase().includes(searchFilter);
+            
+        const matchesSize = !sizeFilter || 
+            (l.found || '').toLowerCase().includes(sizeFilter);
+            
+        return matchesSearch && matchesSize;
       });
     }
 
     if (!leads.length) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px">' +
-        (filter ? 'No leads match your search.' : 'No leads found. Run the Hunter to discover companies.') + '</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:28px">' +
+        (searchFilter || sizeFilter ? 'No leads match your filters.' : 'No leads found. Run the Hunter to discover companies.') + '</td></tr>';
+      document.getElementById('select-all-leads').checked = false;
+      toggleDeleteSelectedBtn();
       return;
     }
 
     tbody.innerHTML = leads.map(function(l, i) {
       return '<tr>' +
+        '<td style="text-align: center;"><input type="checkbox" class="lead-checkbox" data-email="' + escapeHtml(l.email || '') + '" style="cursor: pointer;" /></td>' +
         '<td style="color:var(--muted)">' + (i+1) + '</td>' +
         '<td>' + escapeHtml(l.company || '\u2014') + '</td>' +
         '<td style="color:var(--accent2)">' + escapeHtml(l.email || '\u2014') + '</td>' +
@@ -265,12 +289,51 @@ document.addEventListener('DOMContentLoaded', () => {
         '</tr>';
     }).join('');
 
+    // Bind individual checkboxes
+    tbody.querySelectorAll('.lead-checkbox').forEach(function(cb) {
+      cb.addEventListener('change', toggleDeleteSelectedBtn);
+    });
+
+    // Reset select all checkbox
+    document.getElementById('select-all-leads').checked = false;
+    toggleDeleteSelectedBtn();
+
     // Bind delete buttons
     tbody.querySelectorAll('.delete-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
         deleteLead(this.dataset.email);
       });
     });
+  }
+  
+  function toggleDeleteSelectedBtn() {
+    const anyChecked = document.querySelectorAll('.lead-checkbox:checked').length > 0;
+    document.getElementById('delete-selected-btn').style.display = anyChecked ? 'inline-flex' : 'none';
+  }
+
+  async function deleteSelectedLeads() {
+    const checked = document.querySelectorAll('.lead-checkbox:checked');
+    if (!checked.length) return;
+    
+    if (!confirm('Delete ' + checked.length + ' selected leads?')) return;
+    
+    const emails = Array.from(checked).map(cb => cb.dataset.email);
+    const res = await apiPost('/api/leads_bulk_delete', { emails: emails });
+    if (res.ok) {
+      toast('Deleted ' + emails.length + ' leads', 'ok');
+      refreshLeads();
+    } else {
+      toast('Delete failed', 'err');
+    }
+  }
+
+  async function clearAllLeads() {
+    if (!confirm('WARNING: This will delete ALL leads from firms.csv. Are you sure?')) return;
+    const res = await apiPost('/api/clear_all_leads');
+    if (res.ok) {
+      toast('All leads cleared', 'ok');
+      refreshLeads();
+    }
   }
 
   async function deleteLead(email) {
