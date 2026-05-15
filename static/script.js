@@ -165,11 +165,15 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     const locations = document.getElementById('h-locations').value || document.getElementById('cfg-locations').value || 'Remote, India';
+    const experience = document.getElementById('h-experience').value;
+    const companySize = document.getElementById('h-companysize').value;
     toast('Hunter started...', 'info');
-    appendLog('hunter-log', 'Launching hunt for: ' + roles, 'info');
+    appendLog('hunter-log', 'Hunting: ' + roles + ' | Exp: ' + experience + ' | Size: ' + companySize, 'info');
     const res = await apiPost('/api/run/hunt', {
       roles: roles,
       locations: locations,
+      experience: experience,
+      company_size: companySize,
       max: parseInt(document.getElementById('h-max').value) || 20,
       delay: parseInt(document.getElementById('h-delay').value) || 5,
     });

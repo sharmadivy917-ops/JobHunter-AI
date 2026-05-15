@@ -1,13 +1,11 @@
 """
 hunter.py — Role-based company discovery engine.
 
-Multi-engine strategy:
-  1. Try DuckDuckGo HTML with session/cookies (handles some anti-bot)
-  2. Fallback to Bing search
-  3. Two-phase: get URLs from search → visit pages → extract career emails
-
-The key insight: search engines DON'T show email addresses in snippets.
-We must follow the result URLs and scrape the destination pages.
+Features:
+  - Experience level: fresher, junior, mid, senior, lead, executive
+  - Company size filter: startup, small, mid, large, mnc
+  - Multi-engine: DuckDuckGo → Bing → Google → Yahoo → Brave
+  - Two-phase: get URLs from search → visit pages → extract career emails
 """
 import requests
 from bs4 import BeautifulSoup
@@ -45,7 +43,8 @@ INVALID_DOMAINS = {'example.com', 'email.com', 'yourdomain.com', 'test.com',
                    'wordpress.org', 'jquery.com', 'bootstrapcdn.com',
                    'google.com', 'facebook.com', 'twitter.com', 'x.com',
                    'gstatic.com', 'gravatar.com', 'recaptcha.net',
-                   'duckduckgo.com', 'bing.com', 'microsoft.com'}
+                   'duckduckgo.com', 'bing.com', 'microsoft.com',
+                   'brave.com', 'yahoo.com', 'yandex.com'}
 
 GENERIC_PROVIDERS = {'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
                      'protonmail.com', 'aol.com', 'live.com', 'icloud.com',
@@ -53,27 +52,65 @@ GENERIC_PROVIDERS = {'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
 
 SKIP_SITES = ['linkedin.com', 'indeed.com', 'glassdoor.com', 'youtube.com',
               'facebook.com', 'twitter.com', 'wikipedia.org', 'quora.com',
-              'reddit.com', 'instagram.com', 'pinterest.com', 'amazon.com']
+              'reddit.com', 'instagram.com', 'pinterest.com', 'amazon.com',
+              'naukri.com']
 
 BAD_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
                   '.css', '.js', '.woff', '.ttf', '.ico', '.mp4', '.mp3'}
 
 
-def generate_queries(roles, locations):
-    """Generate search queries targeting company career/contact pages."""
-    queries = []
-    for role in roles:
-        # Direct queries for career pages
-        queries.append(f'{role} company careers email apply')
-        queries.append(f'{role} hiring company HR email India')
-        queries.append(f'{role} startup hiring email resume')
-        queries.append(f'{role} company contact HR recruitment')
-        queries.append(f'"{role}" hiring freshers company email')
-        queries.append(f'{role} companies list HR data email India')
+# ── Experience level keywords ────────────────
+EXP_KEYWORDS = {
+    'any':       ['hiring', 'openings', 'vacancy'],
+    'fresher':   ['fresher', 'entry level', 'graduate', 'trainee', '0-1 years', 'campus', 'intern'],
+    'junior':    ['junior', '1-2 years', '1-3 years', 'associate', 'early career'],
+    'mid':       ['mid level', 'mid-level', '3-5 years', '2-5 years', 'experienced'],
+    'senior':    ['senior', '5+ years', '5-10 years', 'lead', 'experienced professional'],
+    'lead':      ['lead', 'manager', 'team lead', '10+ years', 'principal', 'head of'],
+    'executive': ['director', 'VP', 'CTO', 'executive', 'chief', 'C-level', 'head'],
+}
 
+# ── Company size keywords ────────────────────
+SIZE_KEYWORDS = {
+    'any':     ['company'],
+    'startup': ['startup', 'early stage', 'seed funded', 'small team', 'bootstrap'],
+    'small':   ['small company', 'growing company', 'SMB', 'small business'],
+    'mid':     ['mid-size company', 'mid size', 'growing enterprise', 'scale-up'],
+    'large':   ['enterprise', 'large company', 'corporation', 'established'],
+    'mnc':     ['MNC', 'Fortune 500', 'multinational', 'global company', 'top company'],
+}
+
+
+def generate_queries(roles, locations, experience, company_size):
+    """Generate smart search queries using all filters."""
+    queries = []
+
+    exp_kws = EXP_KEYWORDS.get(experience, EXP_KEYWORDS['any'])
+    size_kws = SIZE_KEYWORDS.get(company_size, SIZE_KEYWORDS['any'])
+
+    for role in roles:
+        # Core queries with experience
+        for ekw in exp_kws[:2]:
+            queries.append(f'{role} {ekw} careers email apply')
+            queries.append(f'{role} {ekw} company HR email')
+
+        # Core queries with company size
+        for skw in size_kws[:2]:
+            queries.append(f'{role} {skw} hiring email')
+            queries.append(f'{role} {skw} careers contact')
+
+        # Combined experience + size
+        queries.append(f'{role} {exp_kws[0]} {size_kws[0]} hiring email')
+
+        # Location-specific
         for loc in locations:
-            queries.append(f'{role} company {loc} careers contact')
-            queries.append(f'{role} hiring {loc} apply email HR')
+            queries.append(f'{role} {exp_kws[0]} {loc} company careers email')
+            queries.append(f'{role} {size_kws[0]} {loc} hiring contact HR')
+
+        # General fallbacks
+        queries.append(f'{role} companies list HR data email')
+        queries.append(f'"{role}" hiring contact email resume')
+        queries.append(f'"send resume" "{role}" {exp_kws[0]} company')
 
     # Deduplicate
     seen = set()
@@ -104,7 +141,6 @@ def load_bounced_domains():
 
 
 def is_valid_email(email):
-    """Check if email is a valid career-related company email."""
     email = email.lower().strip()
     if not EMAIL_REGEX.fullmatch(email):
         return False
@@ -125,22 +161,31 @@ def extract_company_name(email):
     return ' '.join(w.capitalize() for w in name.split())
 
 
-# ── Search Engines ────────────────────────────
+# ══════════════════════════════════════════════
+# SEARCH ENGINES (5 engines with fallback)
+# ══════════════════════════════════════════════
 
-def search_ddg(query, session):
-    """Search DuckDuckGo HTML and return result URLs."""
+def _make_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    return s
+
+
+def search_duckduckgo(query, session):
+    """DuckDuckGo HTML search."""
     url = f'https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}'
     try:
-        res = session.get(url, timeout=25)
+        res = session.get(url, timeout=20)
         if res.status_code != 200:
             return []
-
-        soup = BeautifulSoup(res.text, 'html.parser')
-
-        # Check for captcha
         if 'captcha' in res.text.lower() or 'anomaly' in res.text.lower():
             return []
 
+        soup = BeautifulSoup(res.text, 'html.parser')
         urls = []
         for link in soup.find_all('a', class_='result__a'):
             href = link.get('href', '')
@@ -152,110 +197,136 @@ def search_ddg(query, session):
                     pass
             elif href.startswith('http'):
                 urls.append(href)
-
-        # Also try result__url class
-        if not urls:
-            for link in soup.find_all('a', class_='result__url'):
-                href = link.get('href', '')
-                if href.startswith('http'):
-                    urls.append(href)
-
         return urls
     except:
         return []
 
 
 def search_bing(query, session):
-    """Search Bing and return result URLs."""
+    """Bing search."""
     url = f'https://www.bing.com/search?q={urllib.parse.quote(query)}&count=15'
     try:
-        res = session.get(url, timeout=25)
+        res = session.get(url, timeout=20)
         if res.status_code != 200:
             return []
-
         soup = BeautifulSoup(res.text, 'html.parser')
         urls = []
-
-        # Try multiple selectors
-        # Method 1: <h2><a href=...> inside <li class="b_algo">
         for li in soup.find_all('li', class_='b_algo'):
             a = li.find('a')
             if a and a.get('href', '').startswith('http'):
                 urls.append(a['href'])
-
-        # Method 2: Just find all h2 > a links
         if not urls:
             for h2 in soup.find_all('h2'):
                 a = h2.find('a')
-                if a and a.get('href', '').startswith('http'):
-                    href = a['href']
-                    if 'bing.com' not in href and 'microsoft.com' not in href:
+                if a:
+                    href = a.get('href', '')
+                    if href.startswith('http') and 'bing.com' not in href:
                         urls.append(href)
-
-        # Method 3: All external links
-        if not urls:
-            for a in soup.find_all('a'):
-                href = a.get('href', '')
-                if (href.startswith('http')
-                        and 'bing.com' not in href
-                        and 'microsoft.com' not in href
-                        and 'go.microsoft' not in href):
-                    urls.append(href)
-
         return urls[:15]
     except:
         return []
 
 
 def search_google(query, session):
-    """Search Google and return result URLs."""
+    """Google search (scrape)."""
     url = f'https://www.google.com/search?q={urllib.parse.quote(query)}&num=10'
     try:
-        res = session.get(url, timeout=25)
+        res = session.get(url, timeout=20)
         if res.status_code != 200:
             return []
-
         soup = BeautifulSoup(res.text, 'html.parser')
         urls = []
-
         for a in soup.find_all('a'):
             href = a.get('href', '')
             if '/url?q=' in href:
                 real = urllib.parse.unquote(href.split('/url?q=')[1].split('&')[0])
                 if real.startswith('http'):
                     urls.append(real)
-
         return urls[:15]
     except:
         return []
 
 
+def search_yahoo(query, session):
+    """Yahoo search."""
+    url = f'https://search.yahoo.com/search?p={urllib.parse.quote(query)}&n=10'
+    try:
+        res = session.get(url, timeout=20)
+        if res.status_code != 200:
+            return []
+        soup = BeautifulSoup(res.text, 'html.parser')
+        urls = []
+        for a in soup.find_all('a', class_='d-ib'):
+            href = a.get('href', '')
+            if href.startswith('http') and 'yahoo.com' not in href:
+                urls.append(href)
+        # Fallback: any external <a> in result divs
+        if not urls:
+            for div in soup.find_all('div', class_='dd'):
+                for a in div.find_all('a'):
+                    href = a.get('href', '')
+                    if href.startswith('http') and 'yahoo.com' not in href:
+                        urls.append(href)
+        # Broader fallback: RU links (Yahoo redirect)
+        if not urls:
+            for a in soup.find_all('a'):
+                href = a.get('href', '')
+                if 'RU=' in href:
+                    try:
+                        real = urllib.parse.unquote(href.split('RU=')[1].split('/')[0])
+                        if real.startswith('http'):
+                            urls.append(real)
+                    except:
+                        pass
+        return urls[:15]
+    except:
+        return []
+
+
+def search_brave(query, session):
+    """Brave search."""
+    url = f'https://search.brave.com/search?q={urllib.parse.quote(query)}'
+    try:
+        res = session.get(url, timeout=20)
+        if res.status_code != 200:
+            return []
+        soup = BeautifulSoup(res.text, 'html.parser')
+        urls = []
+        for a in soup.find_all('a', class_='result-header'):
+            href = a.get('href', '')
+            if href.startswith('http'):
+                urls.append(href)
+        if not urls:
+            for a in soup.find_all('a', attrs={'data-type': 'web'}):
+                href = a.get('href', '')
+                if href.startswith('http') and 'brave.com' not in href:
+                    urls.append(href)
+        return urls[:15]
+    except:
+        return []
+
+
+ENGINES = [
+    ("DuckDuckGo", search_duckduckgo),
+    ("Bing", search_bing),
+    ("Google", search_google),
+    ("Yahoo", search_yahoo),
+    ("Brave", search_brave),
+]
+
+
 def get_result_urls(query, session):
-    """Try multiple search engines, return URLs from the first that works."""
-    # Try DuckDuckGo first
-    urls = search_ddg(query, session)
-    if urls:
-        return urls, "DDG"
-
-    time.sleep(1)
-
-    # Fallback to Bing
-    urls = search_bing(query, session)
-    if urls:
-        return urls, "Bing"
-
-    time.sleep(1)
-
-    # Fallback to Google
-    urls = search_google(query, session)
-    if urls:
-        return urls, "Google"
-
+    """Try all engines in order, return URLs from the first that works."""
+    for name, fn in ENGINES:
+        urls = fn(query, session)
+        if urls:
+            return urls, name
+        time.sleep(0.5)
     return [], "None"
 
 
 def scrape_emails_from_url(url, session):
-    """Visit a URL and extract career email addresses from its content."""
+    """Visit a URL and extract email addresses from its content."""
     if any(sd in url for sd in SKIP_SITES):
         return set()
     try:
@@ -268,6 +339,10 @@ def scrape_emails_from_url(url, session):
         return set()
 
 
+# ══════════════════════════════════════════════
+# MAIN ENTRY POINT
+# ══════════════════════════════════════════════
+
 def hunt_for_companies():
     """Main hunter: search -> follow URLs -> scrape emails from pages."""
     print(f"\n{'='*56}")
@@ -279,6 +354,8 @@ def hunt_for_companies():
     locations_input = os.environ.get("HUNTER_LOCATIONS", os.getenv("LOCATIONS", "Remote, India"))
     max_queries = int(os.environ.get("HUNTER_MAX", "15"))
     delay = int(os.environ.get("HUNTER_DELAY", "3"))
+    experience = os.environ.get("HUNTER_EXPERIENCE", "any")
+    company_size = os.environ.get("HUNTER_COMPANY_SIZE", "any")
 
     roles = [r.strip() for r in roles_input.split(',') if r.strip()]
     locations = [l.strip() for l in locations_input.split(',') if l.strip()]
@@ -287,10 +364,17 @@ def hunt_for_companies():
         print("No roles specified. Set roles in Settings.")
         return
 
-    print(f"Roles: {', '.join(roles)}")
-    print(f"Locations: {', '.join(locations)}")
+    exp_labels = {'any':'Any','fresher':'Fresher','junior':'Junior','mid':'Mid-Level',
+                  'senior':'Senior','lead':'Lead/Manager','executive':'Executive'}
+    size_labels = {'any':'Any','startup':'Startup','small':'Small','mid':'Mid-size',
+                   'large':'Enterprise','mnc':'MNC'}
 
-    queries = generate_queries(roles, locations)
+    print(f"Roles:       {', '.join(roles)}")
+    print(f"Locations:   {', '.join(locations)}")
+    print(f"Experience:  {exp_labels.get(experience, experience)}")
+    print(f"Company Size:{size_labels.get(company_size, company_size)}")
+
+    queries = generate_queries(roles, locations, experience, company_size)
     queries = queries[:max_queries]
     existing_emails = load_existing_emails()
     bounced = load_bounced_domains()
@@ -299,26 +383,20 @@ def hunt_for_companies():
     print(f"Search queries: {len(queries)}")
     print(f"Bounced domains: {len(bounced)}\n")
 
-    # Use a persistent session for cookies
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-
+    session = _make_session()
     new_firms = []
     visited_urls = set()
-    engine_used = "None"
+    engine_stats = {}
 
     for qi, query in enumerate(queries, 1):
         print(f"\n[{qi}/{len(queries)}] Searching: {query[:65]}...")
 
-        result_urls, engine_used = get_result_urls(query, session)
-        print(f"   Engine: {engine_used} | URLs: {len(result_urls)}")
+        result_urls, engine = get_result_urls(query, session)
+        engine_stats[engine] = engine_stats.get(engine, 0) + 1
+        print(f"   Engine: {engine} | URLs: {len(result_urls)}")
 
         if not result_urls:
-            print(f"   No results. Retrying after delay...")
+            print(f"   No results from any engine.")
             time.sleep(delay * 2)
             continue
 
@@ -359,7 +437,7 @@ def hunt_for_companies():
                         "contact_email": email,
                         "role": role,
                         "hr_name": "HR Team",
-                        "notes": f"Hunted for '{role}'"
+                        "notes": f"Hunted for '{role}' ({exp_labels.get(experience,'')}, {size_labels.get(company_size,'')})"
                     })
                     existing_emails.add(email)
                     print(f"   Found: {company_name} ({email})")
@@ -370,8 +448,10 @@ def hunt_for_companies():
     print(f"\n{'='*56}")
     print(f"  HUNTER SUMMARY")
     print(f"{'='*56}")
-    print(f"  Search engine: {engine_used}")
+    print(f"  Experience:   {exp_labels.get(experience, experience)}")
+    print(f"  Company Size: {size_labels.get(company_size, company_size)}")
     print(f"  Pages visited: {len(visited_urls)}")
+    print(f"  Engines used: {', '.join(f'{k}({v})' for k,v in engine_stats.items())}")
     print(f"  New Firms Found: {len(new_firms)}")
 
     if new_firms:
@@ -385,10 +465,10 @@ def hunt_for_companies():
         print(f"  Saved to: {FIRMS_CSV}")
     else:
         print("  No new career emails found this run.")
-        print("  This can happen if:")
-        print("    - Search engines are blocking (captcha/rate limit)")
-        print("    - Internet connection is slow")
-        print("    - Try again in a few minutes")
+        print("  Possible reasons:")
+        print("    - Search engines blocking (captcha/rate limit)")
+        print("    - Internet connection issues")
+        print("    - Very niche role/filters — try broader search")
 
     print(f"{'='*56}\n")
 

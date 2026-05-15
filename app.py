@@ -175,6 +175,10 @@ def run_action(action):
             env['HUNTER_MAX'] = str(data['max'])
         if data.get('delay'):
             env['HUNTER_DELAY'] = str(data['delay'])
+        if data.get('experience'):
+            env['HUNTER_EXPERIENCE'] = data['experience']
+        if data.get('company_size'):
+            env['HUNTER_COMPANY_SIZE'] = data['company_size']
         t = threading.Thread(target=run_script, args=("hunter.py",), kwargs={"env_overrides": env})
         t.daemon = True
         t.start()
