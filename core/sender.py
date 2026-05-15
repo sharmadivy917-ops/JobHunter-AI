@@ -288,8 +288,8 @@ def get_email_html(cfg, company, role, hr_name):
 
     return f"""
     <html>
-    <body style="font-family:'Segoe UI',Arial,sans-serif;max-width:700px;margin:auto;padding:24px;color:#222;line-height:1.8;background-color:#f9f9f9;">
-        <div style="background-color:#fff;border-radius:8px;padding:32px;box-shadow:0 2px 4px rgba(0,0,0,0.05);">
+    <body style="font-family:'Segoe UI',Arial,sans-serif;max-width:700px;margin:auto;padding:12px;color:#222;line-height:1.6;background-color:#f9f9f9;">
+        <div style="background-color:#fff;border-radius:8px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.05);">
             <div style="height:4px;background:linear-gradient(90deg,#1A56A0,#4A90D9,#6CB4EE);border-radius:4px;margin-bottom:28px;"></div>
 
             <p style="margin-bottom:16px;font-size:16px;">Dear {hr_name},</p>
