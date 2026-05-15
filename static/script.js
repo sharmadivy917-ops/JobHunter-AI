@@ -147,7 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(_) {}
   }
 
-  setInterval(fetchStatus, 1500);
+  setInterval(fetchStatus, 800);
 
   // ── QUICK ACTIONS ──────────────────────────
   document.getElementById('qa-hunt').addEventListener('click', startHunter);

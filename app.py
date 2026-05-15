@@ -100,11 +100,14 @@ def run_script(script_name, env_overrides=None):
         if env_overrides:
             env.update(env_overrides)
 
-        cmd = [sys.executable, os.path.join(BASE_DIR, "core", script_name)]
+        # Force unbuffered output so logs stream line-by-line
+        env['PYTHONUNBUFFERED'] = '1'
+
+        cmd = [sys.executable, '-u', os.path.join(BASE_DIR, "core", script_name)]
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding='utf-8', errors='replace',
-            env=env, cwd=BASE_DIR
+            env=env, cwd=BASE_DIR, bufsize=1
         )
 
         with lock:

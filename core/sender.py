@@ -23,6 +23,14 @@ if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
+# Force flush on every print so logs stream in real-time
+import builtins
+_original_print = builtins.print
+def _flush_print(*args, **kwargs):
+    kwargs.setdefault('flush', True)
+    _original_print(*args, **kwargs)
+builtins.print = _flush_print
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 ENV_FILE = os.path.join(BASE_DIR, ".env")

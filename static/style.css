@@ -239,11 +239,19 @@ html, body {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
-.log-line { color: var(--text-dim); }
+.log-line {
+  color: var(--text-dim);
+  animation: logSlideIn 0.25s ease-out;
+  padding: 1px 0;
+}
 .log-line.ok   { color: var(--success); }
 .log-line.err  { color: var(--danger); }
 .log-line.info { color: var(--accent2); }
 .log-line .ts  { color: var(--muted); margin-right: 8px; }
+@keyframes logSlideIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 
 /* ── BUTTONS ────────────────────────────── */
 .btn {
