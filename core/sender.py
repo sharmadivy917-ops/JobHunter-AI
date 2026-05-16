@@ -89,6 +89,18 @@ def load_bounced_domains():
     return set()
 
 
+def save_bounced_domain(domain):
+    if not domain:
+        return
+    bounced = load_bounced_domains()
+    bounced.add(domain)
+    try:
+        with open(BOUNCED_JSON, 'w') as f:
+            json.dump(list(bounced), f, indent=2)
+    except:
+        pass
+
+
 def verify_mx(domain):
     """Check if a domain has valid MX records."""
     try:
@@ -459,6 +471,7 @@ def send_emails():
         # MX verification
         if not verify_mx(domain):
             print(f"   MX verification failed for {domain}. Skipping.")
+            save_bounced_domain(domain)
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -497,6 +510,7 @@ def send_emails():
 
         except Exception as e:
             print(f"   Failed: {e}")
+            save_bounced_domain(domain)
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

@@ -92,7 +92,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── STATUS POLLING ─────────────────────────
-  let lastLogCount = 0;
+  let lastLogId = 0;
 
   async function fetchStatus() {
     try {
@@ -129,8 +129,8 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('progress-pct').textContent = pct + '%';
 
       // Append new log entries
-      if (d.log && d.log.length > lastLogCount) {
-        const newEntries = d.log.slice(lastLogCount);
+      if (d.log && d.log.length > 0) {
+        const newEntries = d.log.filter(l => l.id > lastLogId);
         newEntries.forEach(function(l) {
           appendLog('log-box', l.msg, l.level || '');
           // Also mirror to specific tab logs
@@ -142,7 +142,10 @@ document.addEventListener('DOMContentLoaded', () => {
             appendLog('bounce-log', l.msg, l.level || '');
           }
         });
-        lastLogCount = d.log.length;
+        const maxId = Math.max(...d.log.map(l => l.id));
+        if (maxId > lastLogId) {
+          lastLogId = maxId;
+        }
       }
     } catch(_) {}
   }

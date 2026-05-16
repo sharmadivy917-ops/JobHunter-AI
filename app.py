@@ -25,13 +25,16 @@ lock = threading.Lock()
 state = {
     "running": False,
     "stop_requested": False,
-    "log": [],       # list of {msg, level, ts}
+    "log": [],       # list of {id, msg, level, ts}
+    "log_counter": 0,
     "process": None,
 }
 
 def add_log(msg, level=""):
     with lock:
+        state["log_counter"] += 1
         state["log"].append({
+            "id": state["log_counter"],
             "msg": msg,
             "level": level,
             "ts": datetime.now().strftime("%H:%M:%S")
@@ -42,37 +45,53 @@ def add_log(msg, level=""):
 
 def get_stats():
     """Compute live stats from files."""
-    total = 0
-    if os.path.exists(FIRMS_CSV):
-        try:
-            with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-                total = sum(1 for _ in csv.DictReader(f))
-        except:
-            pass
-
-    sent = 0
-    bounced_log = 0
+    sent_emails = set()
+    bounced_emails_log = set()
     if os.path.exists(EMAIL_LOG):
         try:
             with open(EMAIL_LOG, 'r') as f:
                 log = json.load(f)
-                sent = sum(1 for e in log if e.get('status') == 'sent')
-                bounced_log = sum(1 for e in log if e.get('status') == 'bounced')
+                for e in log:
+                    st = e.get('status')
+                    em = e.get('email', '').lower().strip()
+                    if st == 'sent':
+                        sent_emails.add(em)
+                    elif st in ['bounced', 'failed']:
+                        bounced_emails_log.add(em)
         except:
             pass
 
-    bounced_domains = 0
+    bounced_domains = set()
     if os.path.exists(BOUNCED_JSON):
         try:
             with open(BOUNCED_JSON, 'r') as f:
-                bounced_domains = len(json.load(f))
+                bounced_domains = set(json.load(f))
         except:
             pass
 
-    bounced = max(bounced_log, bounced_domains)
-    pending = max(0, total - sent)
+    total = 0
+    sent = 0
+    bounced_in_csv = 0
+    pending = 0
 
-    return {"total": total, "sent": sent, "pending": pending, "bounced": bounced}
+    if os.path.exists(FIRMS_CSV):
+        try:
+            with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    total += 1
+                    em = row.get('contact_email', '').lower().strip()
+                    dom = em.split('@')[1] if '@' in em else ''
+                    if em in sent_emails:
+                        sent += 1
+                    elif dom in bounced_domains or em in bounced_emails_log:
+                        bounced_in_csv += 1
+                    else:
+                        pending += 1
+        except:
+            pass
+
+    total_bounced = max(bounced_in_csv, len(bounced_domains), len(bounced_emails_log))
+    return {"total": total, "sent": sent, "pending": pending, "bounced": total_bounced}
 
 
 def run_script(script_name, env_overrides=None):
@@ -228,14 +247,19 @@ def get_leads():
     if not os.path.exists(FIRMS_CSV):
         return jsonify({"leads": []})
 
-    # Load sent emails
+    # Load sent and bounced emails
     sent_emails = set()
+    bounced_emails = set()
     if os.path.exists(EMAIL_LOG):
         try:
             with open(EMAIL_LOG, 'r') as f:
                 for entry in json.load(f):
-                    if entry.get('status') == 'sent':
-                        sent_emails.add(entry.get('email', '').lower())
+                    st = entry.get('status')
+                    em = entry.get('email', '').lower().strip()
+                    if st == 'sent':
+                        sent_emails.add(em)
+                    elif st in ['bounced', 'failed']:
+                        bounced_emails.add(em)
         except:
             pass
 
@@ -256,7 +280,7 @@ def get_leads():
                 status = 'pending'
                 if email in sent_emails:
                     status = 'sent'
-                elif domain in bounced_domains:
+                elif domain in bounced_domains or email in bounced_emails:
                     status = 'bounced'
                 leads.append({
                     "company": row.get('company_name', ''),
