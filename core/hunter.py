@@ -317,9 +317,9 @@ def search_brave(query, session):
 
 
 ENGINES = [
+    ("Google", search_google),
     ("DuckDuckGo", search_duckduckgo),
     ("Bing", search_bing),
-    ("Google", search_google),
     ("Yahoo", search_yahoo),
     ("Brave", search_brave),
 ]
