@@ -41,7 +41,7 @@ def clean_bounces():
         mail.login(EMAIL_ACCOUNT, APP_PASSWORD)
         mail.select("inbox")
 
-        status, messages = mail.search(None, '(OR FROM "mailer-daemon@googlemail.com" FROM "postmaster")')
+        status, messages = mail.search(None, '(OR FROM "mailer-daemon" FROM "postmaster")')
         
         if status != "OK":
             print("   ✅ No bounce messages found.")
@@ -57,6 +57,15 @@ def clean_bounces():
             return
 
         print(f"🧹 Found {len(email_ids)} bounce messages. Analyzing...")
+
+        bounce_patterns = [
+            r"wasn't delivered to\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+            r"problem delivering your message to\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+            r"failed permanently:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+            r"not delivered to\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+            r"550\s+5\.1\.1\s+<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>",
+            r"Address not found\s*.*?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
+        ]
 
         for e_id in email_ids:
             status, msg_data = mail.fetch(e_id, '(RFC822)')
@@ -77,11 +86,14 @@ def clean_bounces():
                         except:
                             pass
                     
-                    matches = re.findall(r"wasn't delivered to\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", body, re.IGNORECASE)
-                    for match in matches:
-                        bounced_emails.add(match.lower())
+                    for pat in bounce_patterns:
+                        for match in re.findall(pat, body, re.IGNORECASE):
+                            bounced_emails.add(match.lower().strip())
 
-            mail.store(e_id, '+FLAGS', '\\Deleted')
+            try:
+                mail.store(e_id, '+FLAGS', '\\Deleted')
+            except:
+                pass
 
         mail.expunge()
         mail.close()
