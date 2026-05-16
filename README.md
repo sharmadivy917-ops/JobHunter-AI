@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/47643ad1-393a-44a8-adcc-08271cd1d758
+
 # JobHunter-AI
 
 > Autonomous job application engine — finds companies hiring for any role, sends personalized emails with your resume, and cleans bounced addresses. All from a single dashboard.
