@@ -38,6 +38,10 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
       <span class="nav-label">Leads</span>
     </div>
+        <div class="nav-item" data-tab="followups">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <span class="nav-label">Follow-ups</span>
+    </div>
     <div class="nav-item" data-tab="bounces">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
       <span class="nav-label">Bounces</span>
@@ -134,7 +138,7 @@
           <div class="form-grid">
             <div class="field-group">
               <label class="field-label">Job Roles (comma-separated)</label>
-              <input class="field-input" id="h-roles" placeholder="e.g. Python Developer, React Engineer, Data Scientist" />
+              <input class="field-input" id="h-roles" placeholder="e.g. Python Developer, React Intern, Software Trainee" />
             </div>
             <div class="field-group">
               <label class="field-label">Locations</label>
@@ -161,6 +165,15 @@
                 <option value="mid">Mid-size (200-1000)</option>
                 <option value="large">Large / Enterprise (1000+)</option>
                 <option value="mnc">MNC / Fortune 500</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label class="field-label">Target Type</label>
+              <select class="field-input" id="h-target-type">
+                <option value="both">Both (Job & Internship)</option>
+                <option value="job">Job Only</option>
+                <option value="internship">Internship Only</option>
+                <option value="trainee">Trainee Only</option>
               </select>
             </div>
             <div class="field-group">
@@ -234,7 +247,13 @@
           </div>
           <div style="padding:12px 20px 0; display: flex; gap: 10px;">
             <input class="field-input" id="leads-search" placeholder="Search leads by company, email or role..." style="margin-bottom:0; flex: 1;" />
-            <select class="field-input" id="leads-size-filter" style="margin-bottom:0; width: 200px;">
+            <select class="field-input" id="leads-type-filter" style="margin-bottom:0; width: 140px;">
+              <option value="">All Types</option>
+              <option value="job">Jobs</option>
+              <option value="internship">Internships</option>
+              <option value="trainee">Trainees</option>
+            </select>
+            <select class="field-input" id="leads-size-filter" style="margin-bottom:0; width: 180px;">
               <option value="">All Firm Sizes</option>
               <option value="Startup">Startup</option>
               <option value="Small">Small</option>
@@ -247,12 +266,31 @@
             <table class="leads-table" id="leads-table">
               <thead><tr>
                 <th style="width: 40px; text-align: center;"><input type="checkbox" id="select-all-leads" style="cursor: pointer;" /></th>
-                <th>#</th><th>Company</th><th>Email</th><th>Role</th><th>Status</th><th>Source</th><th></th>
+                <th>#</th><th>Company</th><th>Email</th><th>Role</th><th>Type</th><th>Status</th><th>Source</th><th></th>
               </tr></thead>
               <tbody id="leads-body">
-                <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:28px">No leads loaded. Run the Hunter to discover companies.</td></tr>
+                <tr><td colspan="9" style="text-align:center;color:var(--muted);padding:28px">No leads loaded. Run the Hunter to discover companies.</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+            <!-- ══ FOLLOW-UPS ══ -->
+      <div class="tab-pane" id="pane-followups">
+        <div class="card">
+          <div class="card-header"><span class="card-title">3-Stage Follow-up System</span></div>
+          <p style="font-size:12px;color:var(--text-dim);margin-bottom:14px;line-height:1.7">
+            Scans the email log for sent applications and automatically sends stage-appropriate follow-ups on Days 5, 12, and 20.
+          </p>
+          <div class="btn-row">
+            <button class="btn primary" id="start-followup-btn">Scan & Send Follow-ups</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Follow-up Log</span></div>
+          <div class="log-box" id="followup-log">
+            <div class="log-line info"><span class="ts">[ready]</span>Click Scan & Send to begin.</div>
           </div>
         </div>
       </div>
@@ -282,11 +320,14 @@
           <div class="settings-section">Identity</div>
           <div class="form-grid">
             <div class="field-group"><label class="field-label">Your Name</label><input class="field-input" id="cfg-name" placeholder="John Doe" /></div>
-            <div class="field-group"><label class="field-label">Your Title / Role</label><input class="field-input" id="cfg-title" placeholder="Software Engineer" /></div>
+            <div class="field-group"><label class="field-label">Your Title / Role</label><input class="field-input" id="cfg-title" placeholder="Software Developer / Intern" /></div>
             <div class="field-group"><label class="field-label">Your Skills</label><input class="field-input" id="cfg-skills" placeholder="Python, JavaScript, SQL" /></div>
             <div class="field-group"><label class="field-label">Resume Path</label><input class="field-input" id="cfg-resume" placeholder="C:\path\to\resume.pdf" /></div>
             <div class="field-group"><label class="field-label">GitHub / Portfolio</label><input class="field-input" id="cfg-portfolio" placeholder="https://github.com/yourname" /></div>
             <div class="field-group"><label class="field-label">LinkedIn</label><input class="field-input" id="cfg-linkedin" placeholder="https://linkedin.com/in/yourname" /></div>
+          </div>
+
+          <div class="field-group"><label class="field-label">Phone Number</label><input class="field-input" id="cfg-phone" placeholder="+1 234 567 8900" /></div>
           </div>
 
           <div class="settings-section">Gmail SMTP / IMAP</div>
@@ -297,7 +338,7 @@
 
           <div class="settings-section">Hunter Defaults</div>
           <div class="form-grid">
-            <div class="field-group"><label class="field-label">Default Roles</label><input class="field-input" id="cfg-roles" placeholder="Python Developer, React Engineer" /></div>
+            <div class="field-group"><label class="field-label">Default Roles</label><input class="field-input" id="cfg-roles" placeholder="Python Developer, React Intern, Software Trainee" /></div>
             <div class="field-group"><label class="field-label">Default Locations</label><input class="field-input" id="cfg-locations" placeholder="Remote, India" /></div>
           </div>
 

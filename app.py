@@ -110,7 +110,7 @@ def run_script(script_name, env_overrides=None):
         # Inject dotenv values
         load_dotenv(ENV_FILE, override=True)
         for key in ['EMAIL', 'APP_PASSWORD', 'YOUR_NAME', 'YOUR_TITLE', 'YOUR_SKILLS',
-                     'ROLES', 'LOCATIONS', 'RESUME_PATH', 'YOUR_PORTFOLIO', 'YOUR_LINKEDIN',
+                     'ROLES', 'LOCATIONS', 'RESUME_PATH', 'YOUR_PORTFOLIO', 'YOUR_LINKEDIN', 'PHONE',
                      'SEND_DELAY', 'MAX_DAY']:
             val = os.getenv(key)
             if val:
@@ -201,6 +201,8 @@ def run_action(action):
             env['HUNTER_EXPERIENCE'] = data['experience']
         if data.get('company_size'):
             env['HUNTER_COMPANY_SIZE'] = data['company_size']
+        if data.get('target_type'):
+            env['HUNTER_TARGET_TYPE'] = data['target_type']
         t = threading.Thread(target=run_script, args=("hunter.py",), kwargs={"env_overrides": env})
         t.daemon = True
         t.start()
@@ -212,6 +214,11 @@ def run_action(action):
         if data.get('max'):
             env['SEND_MAX'] = str(data['max'])
         t = threading.Thread(target=run_script, args=("sender.py",), kwargs={"env_overrides": env})
+        t.daemon = True
+        t.start()
+
+    elif action == 'follow_up':
+        t = threading.Thread(target=run_script, args=("follow_up.py",))
         t.daemon = True
         t.start()
 
@@ -250,6 +257,7 @@ def get_leads():
     # Load sent and bounced emails
     sent_emails = set()
     bounced_emails = set()
+    replied_emails = set()
     if os.path.exists(EMAIL_LOG):
         try:
             with open(EMAIL_LOG, 'r') as f:
@@ -258,6 +266,8 @@ def get_leads():
                     em = entry.get('email', '').lower().strip()
                     if st == 'sent':
                         sent_emails.add(em)
+                    elif st == 'replied':
+                        replied_emails.add(em)
                     elif st in ['bounced', 'failed']:
                         bounced_emails.add(em)
         except:
@@ -278,7 +288,9 @@ def get_leads():
                 email = row.get('contact_email', '').lower().strip()
                 domain = email.split('@')[1] if '@' in email else ''
                 status = 'pending'
-                if email in sent_emails:
+                if email in replied_emails:
+                    status = 'replied'
+                elif email in sent_emails:
                     status = 'sent'
                 elif domain in bounced_domains or email in bounced_emails:
                     status = 'bounced'
@@ -286,6 +298,7 @@ def get_leads():
                     "company": row.get('company_name', ''),
                     "email": row.get('contact_email', ''),
                     "role": row.get('role', ''),
+                    "type": row.get('type', 'job'),
                     "status": status,
                     "found": row.get('notes', ''),
                 })
@@ -300,7 +313,8 @@ def add_lead():
     data = request.json or {}
     company = data.get('company', '').strip()
     email = data.get('email', '').strip()
-    role = data.get('role', '').strip() or 'Software Developer'
+    role = data.get('role', '').strip() or 'Software Developer / Intern'
+    lead_type = data.get('type', '').strip().lower() or 'job'
     hr = data.get('hr', 'HR Team').strip()
 
     if not company or not email:
@@ -308,7 +322,7 @@ def add_lead():
 
     file_exists = os.path.exists(FIRMS_CSV)
     with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes'])
+        writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type'])
         if not file_exists:
             writer.writeheader()
         writer.writerow({
@@ -316,7 +330,8 @@ def add_lead():
             'contact_email': email,
             'role': role,
             'hr_name': hr,
-            'notes': 'Manually added'
+            'notes': 'Manually added',
+            'type': lead_type
         })
 
     add_log(f"Lead added: {company} ({email})", "ok")
@@ -334,7 +349,7 @@ def delete_lead(email):
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames
         for row in reader:
-            if row.get('contact_email', '').lower().strip() != email.lower().strip():
+            if row.get('contact_email') != email:
                 rows.append(row)
 
     with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
@@ -343,6 +358,37 @@ def delete_lead(email):
         writer.writerows(rows)
 
     add_log(f"Lead deleted: {email}", "ok")
+    return jsonify({"ok": True})
+
+
+@app.route('/api/leads/<path:email>/replied', methods=['POST'])
+def mark_replied(email):
+    email = email.lower().strip()
+    try:
+        with open(EMAIL_LOG, 'r') as f:
+            log = json.load(f)
+    except:
+        log = []
+
+    updated = False
+    for entry in log:
+        if entry.get('email', '').lower().strip() == email:
+            entry['status'] = 'replied'
+            updated = True
+            
+    if not updated:
+        log.append({
+            "company": "Manual Entry",
+            "email": email,
+            "role": "Unknown",
+            "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "replied"
+        })
+
+    with open(EMAIL_LOG, 'w') as f:
+        json.dump(log, f, indent=2)
+
+    add_log(f"Marked {email} as replied.", "ok")
     return jsonify({"ok": True})
 
 
@@ -441,6 +487,7 @@ def settings():
         "RESUME_PATH":    os.getenv("RESUME_PATH", ""),
         "YOUR_PORTFOLIO": os.getenv("YOUR_PORTFOLIO", ""),
         "YOUR_LINKEDIN":  os.getenv("YOUR_LINKEDIN", ""),
+        "PHONE":          os.getenv("PHONE", ""),
         "EMAIL":          os.getenv("EMAIL", ""),
         "APP_PASSWORD":   os.getenv("APP_PASSWORD", ""),
         "ROLES":          os.getenv("ROLES", ""),

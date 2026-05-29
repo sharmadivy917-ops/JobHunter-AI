@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── NAV TAB SWITCHING ──────────────────────
   const TAB_TITLES = {
     dashboard:'Dashboard', hunter:'Hunter', sender:'Sender',
-    leads:'Leads', bounces:'Bounce Handler', settings:'Settings'
+    leads:'Leads', followups:'Follow-ups', bounces:'Bounce Handler', settings:'Settings'
   };
 
   document.querySelectorAll('.nav-item').forEach(el => {
@@ -138,6 +138,8 @@ document.addEventListener('DOMContentLoaded', () => {
             appendLog('hunter-log', l.msg, l.level || '');
           } else if (l.msg && (l.msg.toLowerCase().includes('send') || l.msg.toLowerCase().includes('email'))) {
             appendLog('sender-log', l.msg, l.level || '');
+          } else if (l.msg && (l.msg.toLowerCase().includes('follow') || l.msg.toLowerCase().includes('stage'))) {
+            appendLog('followup-log', l.msg, l.level || '');
           } else if (l.msg && l.msg.toLowerCase().includes('bounce')) {
             appendLog('bounce-log', l.msg, l.level || '');
           }
@@ -170,13 +172,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const locations = document.getElementById('h-locations').value || document.getElementById('cfg-locations').value || 'Remote, India';
     const experience = document.getElementById('h-experience').value;
     const companySize = document.getElementById('h-companysize').value;
+    const targetType = document.getElementById('h-target-type').value;
     toast('Hunter started...', 'info');
-    appendLog('hunter-log', 'Hunting: ' + roles + ' | Exp: ' + experience + ' | Size: ' + companySize, 'info');
+    appendLog('hunter-log', 'Hunting: ' + roles + ' | Exp: ' + experience + ' | Size: ' + companySize + ' | Type: ' + targetType, 'info');
     const res = await apiPost('/api/run/hunt', {
       roles: roles,
       locations: locations,
       experience: experience,
       company_size: companySize,
+      target_type: targetType,
       max: parseInt(document.getElementById('h-max').value) || 20,
       delay: parseInt(document.getElementById('h-delay').value) || 5,
     });
@@ -197,6 +201,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     if (res.error) {
       toast('Sender error: ' + res.error, 'err');
+    }
+  }
+
+  // ── FOLLOW-UPS ─────────────────────────────
+  const followupBtn = document.getElementById('start-followup-btn');
+  if (followupBtn) followupBtn.addEventListener('click', startFollowup);
+
+  async function startFollowup() {
+    toast('Follow-up scan started...', 'info');
+    appendLog('followup-log', 'Starting follow-up engine...', 'info');
+    const res = await apiPost('/api/run/follow_up');
+    if (res.error) {
+      toast('Follow-up error: ' + res.error, 'err');
     }
   }
 
@@ -237,27 +254,30 @@ document.addEventListener('DOMContentLoaded', () => {
   // Search filter
   document.getElementById('leads-search').addEventListener('input', updateLeadsView);
   document.getElementById('leads-size-filter').addEventListener('change', updateLeadsView);
+  document.getElementById('leads-type-filter').addEventListener('change', updateLeadsView);
   
   function updateLeadsView() {
     const searchVal = document.getElementById('leads-search').value.toLowerCase();
     const sizeVal = document.getElementById('leads-size-filter').value.toLowerCase();
-    renderLeads(searchVal, sizeVal);
+    const typeVal = document.getElementById('leads-type-filter').value.toLowerCase();
+    renderLeads(searchVal, sizeVal, typeVal);
   }
 
   async function refreshLeads() {
     const d = await apiGet('/api/leads');
     if (d.error) { toast('Failed to load leads', 'err'); return; }
     allLeads = d.leads || [];
-    renderLeads('', '');
+    renderLeads('', '', '');
     document.getElementById('leads-search').value = '';
     document.getElementById('leads-size-filter').value = '';
+    document.getElementById('leads-type-filter').value = '';
   }
 
-  function renderLeads(searchFilter, sizeFilter) {
+  function renderLeads(searchFilter, sizeFilter, typeFilter) {
     const tbody = document.getElementById('leads-body');
     let leads = allLeads;
 
-    if (searchFilter || sizeFilter) {
+    if (searchFilter || sizeFilter || typeFilter) {
       leads = leads.filter(function(l) {
         const matchesSearch = !searchFilter || 
             (l.company || '').toLowerCase().includes(searchFilter) || 
@@ -267,13 +287,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const matchesSize = !sizeFilter || 
             (l.found || '').toLowerCase().includes(sizeFilter);
             
-        return matchesSearch && matchesSize;
+        const matchesType = !typeFilter || 
+            (l.type || 'job').toLowerCase() === typeFilter;
+            
+        return matchesSearch && matchesSize && matchesType;
       });
     }
 
     if (!leads.length) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:28px">' +
-        (searchFilter || sizeFilter ? 'No leads match your filters.' : 'No leads found. Run the Hunter to discover companies.') + '</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:28px">' +
+        (searchFilter || sizeFilter || typeFilter ? 'No leads match your filters.' : 'No leads found. Run the Hunter to discover companies.') + '</td></tr>';
       document.getElementById('select-all-leads').checked = false;
       toggleDeleteSelectedBtn();
       return;
@@ -286,9 +309,13 @@ document.addEventListener('DOMContentLoaded', () => {
         '<td>' + escapeHtml(l.company || '\u2014') + '</td>' +
         '<td style="color:var(--accent2)">' + escapeHtml(l.email || '\u2014') + '</td>' +
         '<td style="color:var(--text-dim)">' + escapeHtml(l.role || '\u2014') + '</td>' +
+        '<td><span class="badge ' + escapeHtml((l.type || 'job').toLowerCase()) + '-type" style="text-transform:capitalize">' + escapeHtml(l.type || 'job') + '</span></td>' +
         '<td><span class="badge ' + (l.status||'pending') + '">' + (l.status||'pending') + '</span></td>' +
         '<td style="color:var(--muted);font-size:10px">' + escapeHtml(l.found || '\u2014') + '</td>' +
-        '<td><button class="delete-btn" data-email="' + escapeHtml(l.email || '') + '" title="Delete lead">&times;</button></td>' +
+        '<td>' +
+          '<button class="replied-btn" data-email="' + escapeHtml(l.email || '') + '" title="Mark as Replied" style="background:none;border:none;color:var(--success);cursor:pointer;margin-right:8px;font-size:12px;">✔</button>' +
+          '<button class="delete-btn" data-email="' + escapeHtml(l.email || '') + '" title="Delete lead">&times;</button>' +
+        '</td>' +
         '</tr>';
     }).join('');
 
@@ -305,6 +332,13 @@ document.addEventListener('DOMContentLoaded', () => {
     tbody.querySelectorAll('.delete-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
         deleteLead(this.dataset.email);
+      });
+    });
+
+    // Bind replied buttons
+    tbody.querySelectorAll('.replied-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        markReplied(this.dataset.email);
       });
     });
   }
@@ -340,13 +374,24 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function deleteLead(email) {
-    if (!confirm('Remove ' + email + ' from leads?')) return;
+    if (!confirm('Delete lead: ' + email + '?')) return;
     const res = await apiDelete('/api/leads/' + encodeURIComponent(email));
     if (res.ok) {
-      toast('Lead removed', 'ok');
+      toast('Lead deleted', 'ok');
       refreshLeads();
     } else {
       toast('Delete failed', 'err');
+    }
+  }
+
+  async function markReplied(email) {
+    if (!confirm('Mark ' + email + ' as replied? This will stop all follow-ups for this company.')) return;
+    const res = await apiPost('/api/leads/' + encodeURIComponent(email) + '/replied');
+    if (res.ok) {
+      toast(email + ' marked as replied', 'ok');
+      refreshLeads();
+    } else {
+      toast('Failed to mark replied', 'err');
     }
   }
 
@@ -379,8 +424,9 @@ document.addEventListener('DOMContentLoaded', () => {
       '<td><input class="field-input" id="add-company" placeholder="Company" /></td>' +
       '<td><input class="field-input" id="add-email" placeholder="hr@company.com" /></td>' +
       '<td><input class="field-input" id="add-role" placeholder="Role" /></td>' +
-      '<td colspan="2"><input class="field-input" id="add-hr" placeholder="HR Name" value="HR Team" /></td>' +
-      '<td><button class="btn sm primary" id="add-lead-save-btn">Add</button></td>';
+      '<td><select class="field-input" id="add-type" style="padding:6px"><option value="job">Job</option><option value="internship">Intern</option><option value="trainee">Trainee</option></select></td>' +
+      '<td><input class="field-input" id="add-hr" placeholder="HR Name" value="HR Team" /></td>' +
+      '<td colspan="2"><button class="btn sm primary" id="add-lead-save-btn" style="width:100%">Add</button></td>';
     tbody.insertBefore(tr, tbody.firstChild);
 
     document.getElementById('add-lead-save-btn').addEventListener('click', saveNewLead);
@@ -391,13 +437,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const email = document.getElementById('add-email').value.trim();
     const role = document.getElementById('add-role').value.trim();
     const hr = document.getElementById('add-hr').value.trim();
+    const type = document.getElementById('add-type').value;
 
     if (!company || !email) {
       toast('Company and email are required', 'err');
       return;
     }
 
-    const res = await apiPost('/api/leads', {company: company, email: email, role: role, hr: hr});
+    const res = await apiPost('/api/leads', {company: company, email: email, role: role, hr: hr, type: type});
     if (res.ok) {
       toast('Lead added: ' + company, 'ok');
       addRowVisible = false;
@@ -417,6 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
       YOUR_TITLE:    document.getElementById('cfg-title').value,
       YOUR_SKILLS:   document.getElementById('cfg-skills').value,
       RESUME_PATH:   document.getElementById('cfg-resume').value,
+      PHONE:         document.getElementById('cfg-phone').value,
       YOUR_PORTFOLIO:document.getElementById('cfg-portfolio').value,
       YOUR_LINKEDIN: document.getElementById('cfg-linkedin').value,
       EMAIL:         document.getElementById('cfg-gmail').value,
@@ -439,6 +487,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cfg-title').value     = d.YOUR_TITLE || '';
     document.getElementById('cfg-skills').value    = d.YOUR_SKILLS || '';
     document.getElementById('cfg-resume').value    = d.RESUME_PATH || '';
+    if(document.getElementById('cfg-phone')) document.getElementById('cfg-phone').value = d.PHONE || '';
     document.getElementById('cfg-portfolio').value = d.YOUR_PORTFOLIO || '';
     document.getElementById('cfg-linkedin').value  = d.YOUR_LINKEDIN || '';
     document.getElementById('cfg-gmail').value     = d.EMAIL || '';

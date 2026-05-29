@@ -347,6 +347,10 @@ select.field-input { cursor: pointer; }
 .badge.sent    { background: rgba(71,255,156,0.1); color: var(--success); border: 1px solid rgba(71,255,156,0.25); }
 .badge.pending { background: rgba(255,194,71,0.1); color: #ffc247; border: 1px solid rgba(255,194,71,0.25); }
 .badge.bounced { background: rgba(255,79,79,0.1); color: var(--danger); border: 1px solid rgba(255,79,79,0.25); }
+.badge.replied { background: rgba(71,200,255,0.15); color: var(--accent2); border: 1px solid rgba(71,200,255,0.3); }
+.badge.job-type        { background: rgba(232,255,71,0.1); color: var(--accent); border: 1px solid rgba(232,255,71,0.25); }
+.badge.internship-type { background: rgba(71,200,255,0.1); color: var(--accent2); border: 1px solid rgba(71,200,255,0.25); }
+.badge.trainee-type    { background: rgba(180,100,255,0.1); color: #b464ff; border: 1px solid rgba(180,100,255,0.25); }
 
 .delete-btn {
   background: none;

@@ -17,6 +17,7 @@ import time
 import io
 import sys
 import urllib.parse
+import dns.resolver
 from dotenv import load_dotenv
 
 # Fix Windows console encoding
@@ -88,32 +89,43 @@ SIZE_KEYWORDS = {
     'mnc':     ['"Fortune 500"', '"global enterprise"', '"multinational"', '"top companies"', '"industry leader"'],
 }
 
+# ── Target Type keywords ─────────────────────
+TYPE_KEYWORDS = {
+    'both':       [''],
+    'job':        ['job', 'full time'],
+    'internship': ['internship', 'intern', 'stipend'],
+    'trainee':    ['trainee', 'apprentice', 'graduate program'],
+}
 
-def generate_queries(roles, locations, experience, company_size):
+
+def generate_queries(roles, locations, experience, company_size, target_type):
     """Generate smart search queries using all filters."""
     queries = []
 
     exp_kws = EXP_KEYWORDS.get(experience, EXP_KEYWORDS['any'])
     size_kws = SIZE_KEYWORDS.get(company_size, SIZE_KEYWORDS['any'])
+    type_kw = TYPE_KEYWORDS.get(target_type, TYPE_KEYWORDS['both'])[0]
+    
+    type_prefix = f"{type_kw} " if type_kw else ""
 
     for role in roles:
         # Core queries with experience
         for ekw in exp_kws[:2]:
-            queries.append(f'{role} {ekw} careers email apply')
-            queries.append(f'{role} {ekw} company HR email')
+            queries.append(f'{type_prefix}{role} {ekw} careers email apply')
+            queries.append(f'{type_prefix}{role} {ekw} company HR email')
 
         # Core queries with company size
         for skw in size_kws[:2]:
-            queries.append(f'{role} {skw} hiring email')
-            queries.append(f'{role} {skw} careers contact')
+            queries.append(f'{type_prefix}{role} {skw} hiring email')
+            queries.append(f'{type_prefix}{role} {skw} careers contact')
 
         # Combined experience + size
-        queries.append(f'{role} {exp_kws[0]} {size_kws[0]} hiring email')
+        queries.append(f'{type_prefix}{role} {exp_kws[0]} {size_kws[0]} hiring email')
 
         # Location-specific
         for loc in locations:
-            queries.append(f'{role} {exp_kws[0]} {loc} company careers email')
-            queries.append(f'{role} {size_kws[0]} {loc} hiring contact HR')
+            queries.append(f'{type_prefix}{role} {exp_kws[0]} {loc} company careers email')
+            queries.append(f'{type_prefix}{role} {size_kws[0]} {loc} hiring contact HR')
 
         # General fallbacks
         queries.append(f'{role} companies list HR data email')
@@ -146,6 +158,16 @@ def load_bounced_domains():
         except:
             pass
     return set()
+
+
+
+def verify_mx(domain):
+    """Check if a domain has valid MX records."""
+    try:
+        records = dns.resolver.resolve(domain, 'MX')
+        return len(records) > 0
+    except:
+        return False
 
 
 def is_valid_email(email):
@@ -360,12 +382,13 @@ def hunt_for_companies():
     print(f"{'='*56}\n")
 
     # Config
-    roles_input = os.environ.get("HUNTER_ROLES", os.getenv("ROLES", "Software Developer"))
+    roles_input = os.environ.get("HUNTER_ROLES", os.getenv("ROLES", "Software Developer, Software Intern"))
     locations_input = os.environ.get("HUNTER_LOCATIONS", os.getenv("LOCATIONS", "Remote, India"))
     max_queries = int(os.environ.get("HUNTER_MAX", "15"))
     delay = int(os.environ.get("HUNTER_DELAY", "3"))
     experience = os.environ.get("HUNTER_EXPERIENCE", "any")
     company_size = os.environ.get("HUNTER_COMPANY_SIZE", "any")
+    target_type = os.environ.get("HUNTER_TARGET_TYPE", "both")
 
     roles = [r.strip() for r in roles_input.split(',') if r.strip()]
     locations = [l.strip() for l in locations_input.split(',') if l.strip()]
@@ -378,13 +401,15 @@ def hunt_for_companies():
                   'senior':'Senior','lead':'Lead/Manager','executive':'Executive'}
     size_labels = {'any':'Any','startup':'Startup','small':'Small','mid':'Mid-size',
                    'large':'Enterprise','mnc':'MNC'}
+    type_labels = {'both':'Job & Internship', 'job':'Job Only', 'internship':'Internship Only', 'trainee':'Trainee Only'}
 
     print(f"Roles:       {', '.join(roles)}")
     print(f"Locations:   {', '.join(locations)}")
     print(f"Experience:  {exp_labels.get(experience, experience)}")
     print(f"Company Size:{size_labels.get(company_size, company_size)}")
+    print(f"Target Type: {type_labels.get(target_type, target_type)}")
 
-    queries = generate_queries(roles, locations, experience, company_size)
+    queries = generate_queries(roles, locations, experience, company_size, target_type)
     queries = queries[:max_queries]
     existing_emails = load_existing_emails()
     bounced = load_bounced_domains()
@@ -448,7 +473,7 @@ def hunt_for_companies():
         
         file_exists = os.path.exists(FIRMS_CSV)
         with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes'])
+            writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type'])
             if not file_exists:
                 writer.writeheader()
             
@@ -458,9 +483,10 @@ def hunt_for_companies():
                     writer.writerow({
                         'company_name': name,
                         'contact_email': email,
-                        'role': roles[0] if roles else 'Software Engineer',
+                        'role': roles[0] if roles else 'Software Developer / Intern',
                         'hr_name': 'Talent Acquisition',
-                        'notes': f"Hardcoded Top MNC (Role: {roles[0] if roles else 'Any'})"
+                        'notes': f"Hardcoded Top MNC (Role: {roles[0] if roles else 'Any'})",
+                        'type': target_type if target_type != 'both' else 'job'
                     })
                     existing_emails.add(email)
                     added_count += 1
@@ -507,7 +533,8 @@ def hunt_for_companies():
 
                 if (email not in existing_emails
                         and is_valid_email(email)
-                        and domain not in bounced):
+                        and domain not in bounced
+                        and verify_mx(domain)):
 
                     company_name = extract_company_name(email)
 
@@ -523,7 +550,8 @@ def hunt_for_companies():
                         "contact_email": email,
                         "role": role,
                         "hr_name": "HR Team",
-                        "notes": f"Hunted for '{role}' ({exp_labels.get(experience,'')}, {size_labels.get(company_size,'')})"
+                        "notes": f"Hunted for '{role}' ({exp_labels.get(experience,'')}, {size_labels.get(company_size,'')})",
+                        "type": target_type if target_type != 'both' else 'job'
                     })
                     existing_emails.add(email)
                     print(f"   Found: {company_name} ({email})")
@@ -543,7 +571,7 @@ def hunt_for_companies():
     if new_firms:
         file_exists = os.path.exists(FIRMS_CSV)
         with open(FIRMS_CSV, "a", newline='', encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["company_name", "contact_email", "role", "hr_name", "notes"])
+            writer = csv.DictWriter(f, fieldnames=["company_name", "contact_email", "role", "hr_name", "notes", "type"])
             if not file_exists:
                 writer.writeheader()
             for firm in new_firms:

@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from dotenv import load_dotenv
+import email.utils
 
 # Fix Windows console encoding
 if sys.stdout.encoding != 'utf-8':
@@ -52,11 +53,69 @@ def get_config():
         "portfolio": os.getenv("YOUR_PORTFOLIO", ""),
         "linkedin": os.getenv("YOUR_LINKEDIN", ""),
         "resume": os.getenv("RESUME_PATH", ""),
-        "delay_min": int(os.environ.get("SEND_DELAY", os.getenv("SEND_DELAY", "8"))),
-        "delay_max": int(os.environ.get("SEND_DELAY", os.getenv("SEND_DELAY", "8"))) + 7,
-        "max_sends": int(os.environ.get("SEND_MAX", os.getenv("MAX_DAY", "50"))),
+        "phone": os.getenv("PHONE", ""),
+        "delay_min": int(os.environ.get("SEND_DELAY", os.getenv("SEND_DELAY", "15"))),
+        "delay_max": int(os.environ.get("SEND_DELAY", os.getenv("SEND_DELAY", "15"))) + 30,
+        "max_sends": int(os.environ.get("SEND_MAX", os.getenv("MAX_DAY", "30"))),
     }
 
+SUBJECT_TEMPLATES = {
+    "job": [
+        "Application for {role} — {name}",
+        "{name} | Eager to Join as {role}",
+        "Passionate {title} Seeking {role} Opportunity",
+        "{role} Application — {name} (Available Immediately)",
+        "Interested in {role} — {name}",
+    ],
+    "internship": [
+        "Internship Application: {role} — {name}",
+        "{name} | Seeking {role} Internship",
+        "Eager Intern — {role} Application — {name}",
+        "{role} Internship — {name} (Available Immediately)",
+        "Application for {role} Internship — {name}",
+    ],
+    "trainee": [
+        "Trainee Application: {role} — {name}",
+        "{name} | Applying for {role} Trainee Role",
+        "Fresher Seeking {role} Trainee Role — {name}",
+        "{role} Trainee Application — {name} (Available Immediately)",
+        "Application for {role} Trainee Position — {name}",
+    ],
+}
+
+PS_LINES = {
+    "job": [
+        "P.S. I'm available to start immediately and am flexible with interview timings.",
+        "P.S. I'd love to discuss how my skills can add value to your current projects.",
+        "P.S. I'm particularly excited about the work your team is doing and would be thrilled to contribute.",
+        "P.S. Feel free to call me at {phone} if you'd like to have a quick chat.",
+    ],
+    "internship": [
+        "P.S. I'm eager to learn and grow — even a short internship would mean the world to me!",
+        "P.S. I'm open to both paid and unpaid internships — gaining experience is my top priority.",
+        "P.S. I'm available to start my internship immediately and am flexible with timings.",
+        "P.S. Feel free to call me at {phone} if you'd like to have a quick chat about the internship.",
+    ],
+    "trainee": [
+        "P.S. I'm eager to learn under your team's guidance and prove my capabilities as a trainee.",
+        "P.S. I'm available to start immediately as a trainee and am flexible with arrangements.",
+        "P.S. I'm committed to making the most of any trainee opportunity and delivering real value.",
+        "P.S. Feel free to call me at {phone} if you'd like to discuss the trainee role.",
+    ],
+}
+
+def _infer_type(role):
+    role_lower = role.lower()
+    if any(kw in role_lower for kw in ["intern", "internship"]):
+        return "internship"
+    if any(kw in role_lower for kw in ["trainee", "apprentice"]):
+        return "trainee"
+    return "job"
+
+def get_subject(role, name, title, lead_type="job"):
+    templates = SUBJECT_TEMPLATES.get(lead_type, SUBJECT_TEMPLATES["job"])
+    template = random.choice(templates)
+    return template.format(role=role, name=name, title=title)
 
 def load_email_log():
     if os.path.exists(EMAIL_LOG):
@@ -102,15 +161,27 @@ def save_bounced_domain(domain):
 
 
 def verify_mx(domain):
-    """Check if a domain has valid MX records."""
-    try:
-        records = dns.resolver.resolve(domain, 'MX')
-        return len(records) > 0
-    except:
+    """Check if a domain can receive email (MX or A record fallback)."""
+    if not domain or len(domain) < 3:
         return False
+    # Try MX records first
+    try:
+        records = dns.resolver.resolve(domain, 'MX', lifetime=5)
+        if len(records) > 0:
+            return True
+    except:
+        pass
+    # Fallback: check A record (many small companies accept email via A record)
+    try:
+        records = dns.resolver.resolve(domain, 'A', lifetime=5)
+        if len(records) > 0:
+            return True
+    except:
+        pass
+    return False
 
 
-def _get_role_context(role: str, cfg: dict) -> dict:
+def _get_role_context(role: str, cfg: dict, lead_type: str = "job") -> dict:
     """Classify the role string into a category and return tailored copy blocks with comprehensive personalization."""
     role_lower = role.lower()
 
@@ -125,13 +196,17 @@ def _get_role_context(role: str, cfg: dict) -> dict:
         (["finance", "account", "audit", "tax", "banking", "financial analyst", "accountant"], "finance"),
         (["marketing", "seo", "content", "social media", "growth", "brand", "campaign"], "marketing"),
         (["hr ", "human resources", "talent", "recruitment"], "hr"),
+        (["intern", "internship", "trainee", "apprentice"], "intern"),
     ]
 
-    category = "general"
-    for keywords, cat in CATEGORIES:
-        if any(kw in role_lower for kw in keywords):
-            category = cat
-            break
+    if lead_type in ("internship", "trainee"):
+        category = "intern"
+    else:
+        category = "general"
+        for keywords, cat in CATEGORIES:
+            if any(kw in role_lower for kw in keywords):
+                category = cat
+                break
 
     skills = cfg.get("skills", "")
     title = cfg.get("title", "professional")
@@ -263,8 +338,20 @@ def _get_role_context(role: str, cfg: dict) -> dict:
             ],
             "closing": "I'm eager to bring marketing expertise, creativity, and a growth mindset to your team's success and expansion."
         },
+        "intern": {
+            "intro": f"I am writing to express my strong interest in the <strong>{role}</strong> opening at your organization. As an enthusiastic <strong>{title}</strong> with skills in <strong>{skills}</strong>, I am eager to learn, grow, and contribute meaningfully \u2014 even as an intern or trainee.",
+            "body": "I bring a strong foundation in software development combined with a genuine passion for learning. I understand that internships and trainee programs are invaluable opportunities to gain hands-on experience, work alongside experienced professionals, and contribute fresh perspectives to the team. I am committed to making the most of every learning opportunity and delivering real value from day one.",
+            "highlights": [
+                f"Strong foundation in <strong>{skills}</strong> with a passion for continuous learning and growth",
+                "Quick learner who adapts fast to new technologies, tools, and team workflows",
+                "Hands-on project experience through personal and academic projects on GitHub",
+                "Strong work ethic \u2014 willing to go above and beyond to prove my capabilities",
+                "Open to <strong>internship, trainee, or full-time</strong> roles \u2014 on-site, hybrid, or remote"
+            ],
+            "closing": "I would be thrilled to join your team in any capacity and demonstrate my potential through hard work and dedication."
+        },
         "general": {
-            "intro": f"I am writing to express my keen interest in the <strong>{role}</strong> position with your organization. As a dedicated <strong>{title}</strong> with expertise in <strong>{skills}</strong>, I am eager to contribute meaningfully to your team.",
+            "intro": f"I am writing to express my keen interest in the <strong>{role}</strong> opening with your organization. As a dedicated <strong>{title}</strong> with expertise in <strong>{skills}</strong>, I am eager to contribute meaningfully to your team \u2014 whether in a full-time, internship, or trainee capacity.",
             "body": "I bring a proven track record of delivering high-quality work, solving complex problems effectively, and collaborating seamlessly across teams. I'm passionate about continuous learning, adapting to new technologies and methodologies, and bringing a positive, solution-oriented mindset to every challenge.",
             "highlights": [
                 f"Proficient in <strong>{skills}</strong> with a strong growth mindset and passion for learning new tools",
@@ -282,7 +369,12 @@ def _get_role_context(role: str, cfg: dict) -> dict:
     return COPY.get(category, COPY["general"])
 
 
-def get_email_html(cfg, company, role, hr_name):
+def get_email_html(cfg, company, role, hr_name, notes="", lead_type="job"): 
+    ps_pool = PS_LINES.get(lead_type, PS_LINES["job"])
+    ps_text = random.choice(ps_pool).format(phone=cfg.get("phone", ""))
+    notes_line = ""
+    if notes and len(notes) > 5:
+        notes_line = f'<p style="margin-bottom:16px;font-size:15px;line-height:1.8;color:#1A56A0;"><em>I have been following {company}\'s work and am particularly drawn to your focus area, which aligns well with my professional interests.</em></p>'
     """Generate the rich HTML email body with comprehensive role-specific content."""
     portfolio_btn = ""
     if cfg["portfolio"]:
@@ -292,7 +384,7 @@ def get_email_html(cfg, company, role, hr_name):
     if cfg["linkedin"]:
         linkedin_btn = f'<a href="{cfg["linkedin"]}" target="_blank" style="display:inline-block;background:#0077B5;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">LinkedIn Profile</a>'
 
-    ctx = _get_role_context(role, cfg)
+    ctx = _get_role_context(role, cfg, lead_type=lead_type)
     intro = ctx["intro"]
     body = ctx["body"]
     bullets = "".join(f"<li style='margin-bottom:8px;color:#333;'>{h}</li>" for h in ctx["highlights"])
@@ -320,6 +412,7 @@ def get_email_html(cfg, company, role, hr_name):
             <p style="margin-bottom:16px;font-size:16px;">Dear {hr_name},</p>
 
             <p style="margin-bottom:16px;font-size:15px;line-height:1.8;">{intro}</p>
+            {notes_line}
 
             <p style="margin-bottom:16px;font-size:15px;line-height:1.8;color:#444;">{body}</p>
 
@@ -337,14 +430,16 @@ def get_email_html(cfg, company, role, hr_name):
 
             <div style="margin:20px 0;">{portfolio_btn}{linkedin_btn}</div>
 
-            <p style="margin-bottom:24px;font-size:15px;">I am available for an interview at your earliest convenience and look forward to connecting with you.</p>
+            <p style="margin-bottom:24px;font-size:15px;">I am available for an interview or discussion at your earliest convenience and look forward to connecting with you.</p>
 
-            <p style="margin-bottom:8px;font-size:15px;">Thank you for considering my application.</p>
+            <p style="margin-bottom:8px;font-size:15px;">{'Thank you for considering me for this internship opportunity.' if lead_type == 'internship' else 'Thank you for considering me for this trainee role.' if lead_type == 'trainee' else 'Thank you for considering my application.'}</p>
 
+            <p style="margin-top:16px;font-size:14px;color:#555;font-style:italic;">{ps_text}</p>
             <div style="margin-top:32px;padding-top:16px;border-top:2px solid #e0e0e0;">
                 <p style="margin:0;font-weight:700;color:#1A56A0;font-size:16px;">{cfg['name']}</p>
                 <p style="margin:4px 0;color:#666;font-size:14px;">{cfg['email']}</p>
-                <p style="margin:4px 0;color:#999;font-size:13px;">Applied for: <strong>{role}</strong> at <strong>{company}</strong></p>
+                <p style="margin:4px 0;color:#666;font-size:14px;">📱 {cfg['phone']}</p>
+                <p style="margin:4px 0;color:#999;font-size:13px;">Applied for: <strong>{role}</strong> {'(' + lead_type.title() + ')' if lead_type != 'job' else ''} at <strong>{company}</strong></p>
             </div>
         </div>
     </body>
@@ -352,10 +447,13 @@ def get_email_html(cfg, company, role, hr_name):
     """
 
 
-def get_email_plain(cfg, company, role, hr_name):
+def get_email_plain(cfg, company, role, hr_name, notes="", lead_type="job"): 
+    ps_pool = PS_LINES.get(lead_type, PS_LINES["job"])
+    ps_text = random.choice(ps_pool).format(phone=cfg.get("phone", ""))
+    notes_line = f"I have been following {company}'s work..." if notes and len(notes) > 5 else ""
     """Plain text fallback with full personalization."""
     import re
-    ctx = _get_role_context(role, cfg)
+    ctx = _get_role_context(role, cfg, lead_type=lead_type)
     intro = re.sub(r"<[^>]+>", "", ctx["intro"])
     body = re.sub(r"<[^>]+>", "", ctx["body"])
     bullets = "\n".join(f"  • {re.sub(r'<[^>]+>', '', h)}" for h in ctx["highlights"])
@@ -364,6 +462,8 @@ def get_email_plain(cfg, company, role, hr_name):
     return f"""Dear {hr_name},
 
 {intro}
+
+{notes_line}
 
 {body}
 
@@ -374,13 +474,16 @@ I have attached my resume for your detailed review.
 
 {closing} I would welcome the opportunity to discuss how my background aligns with the needs of your team at {company}.
 
-I am available for an interview at your earliest convenience and look forward to connecting with you.
+I am available for an interview or discussion at your earliest convenience and look forward to connecting with you.
 
-Thank you for considering my application.
+{'Thank you for considering me for this internship opportunity.' if lead_type == 'internship' else 'Thank you for considering me for this trainee role.' if lead_type == 'trainee' else 'Thank you for considering my application.'}
 
 Best regards,
 {cfg['name']}
 {cfg['email']}
+{cfg['phone']}
+
+{ps_text}
 """
 
 
@@ -418,8 +521,10 @@ def send_emails():
     firms = []
     with open(FIRMS_CSV, "r", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            if row.get("company_name") and row.get("contact_email"):
-                firms.append({k: v.strip() for k, v in row.items()})
+            firm = {k: v.strip() for k, v in row.items()}
+            if firm.get("company_name") and firm.get("contact_email"):
+                firm["type"] = firm.get("type", "").strip().lower() or _infer_type(firm.get("role", ""))
+                firms.append(firm)
 
     if not firms:
         print("No firms in database.")
@@ -431,9 +536,9 @@ def send_emails():
 
     pending = []
     for firm in firms:
-        email = firm["contact_email"].lower()
-        domain = email.split('@')[1] if '@' in email else ''
-        if email not in already_sent and domain not in bounced:
+        firm_email = firm["contact_email"].lower()
+        domain = firm_email.split('@')[1] if '@' in firm_email else ''
+        if firm_email not in already_sent and domain not in bounced:
             pending.append(firm)
 
     if not pending:
@@ -441,7 +546,17 @@ def send_emails():
         return
 
     # Apply limit
-    to_send = pending[:cfg["max_sends"]]
+    
+    # Daily limits
+    today = datetime.now().strftime("%Y-%m-%d")
+    daily_sent = sum(1 for e in load_email_log() if e.get("status") == "sent" and e.get("sent_at", "").startswith(today))
+    remaining = cfg["max_sends"] - daily_sent
+    if remaining <= 0:
+        print(f"⛔ Daily limit reached ({cfg['max_sends']}). Try again tomorrow.")
+        return
+    to_send = pending[:remaining]
+    print(f"📊 Daily budget: {remaining} emails remaining today.")
+
 
     print(f"\nSending {len(to_send)} emails (skipping {len(firms)-len(pending)} already sent)...\n")
 
@@ -481,23 +596,45 @@ def send_emails():
             continue
 
         try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"Application for {role} — {cfg['name']}"
-            msg["From"] = f"{cfg['name']} <{cfg['email']}>"
-            msg["To"] = to_email
+            for attempt in range(3):
+                try:
+                    msg = MIMEMultipart("mixed")
+                    msg["Subject"] = get_subject(role, cfg['name'], cfg['title'], lead_type=firm.get("type", "job"))
+                    msg["From"] = f"{cfg['name']} <{cfg['email']}>"
+                    msg["To"] = to_email
+                    msg["Reply-To"] = cfg['email']
+                    msg["Date"] = email.utils.formatdate(localtime=True)
+                    msg["Message-ID"] = email.utils.make_msgid(domain=cfg['email'].split('@')[1])
 
-            msg.attach(MIMEText(get_email_plain(cfg, company, role, hr_name), "plain"))
-            msg.attach(MIMEText(get_email_html(cfg, company, role, hr_name), "html"))
+                    alt_part = MIMEMultipart("alternative")
+                    notes = firm.get("notes", "")
+                    lead_type = firm.get("type", "job")
+                    alt_part.attach(MIMEText(get_email_plain(cfg, company, role, hr_name, notes, lead_type=lead_type), "plain"))
+                    alt_part.attach(MIMEText(get_email_html(cfg, company, role, hr_name, notes, lead_type=lead_type), "html"))
+                    msg.attach(alt_part)
 
-            attach_resume(msg, cfg["resume"])
+                    attach_resume(msg, cfg["resume"])
 
-            server.sendmail(cfg["email"], to_email, msg.as_string())
+                    server.sendmail(cfg["email"], to_email, msg.as_string())
+                    break
+                except smtplib.SMTPServerDisconnected:
+                    try:
+                        server.connect("smtp.gmail.com", 465)
+                        server.login(cfg["email"], cfg["password"])
+                    except: pass
+                except Exception as e:
+                    if attempt < 2:
+                        wait = (attempt + 1) * 5
+                        print(f"   ⚠️ Attempt {attempt+1} failed, retrying in {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        raise e
             print(f"   Sent successfully!")
             sent_count += 1
 
             log.append({
                 "company": company, "email": to_email,
-                "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "role": role, "type": firm.get("type", "job"), "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "sent"
             })
             save_email_log(log)
