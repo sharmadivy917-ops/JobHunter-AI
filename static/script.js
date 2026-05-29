@@ -4,18 +4,27 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── NAV TAB SWITCHING ──────────────────────
   const TAB_TITLES = {
     dashboard:'Dashboard', hunter:'Hunter', sender:'Sender',
-    leads:'Leads', followups:'Follow-ups', bounces:'Bounce Handler', settings:'Settings'
+    leads:'Leads', followups:'Follow-ups', history:'History', pipeline:'Pipeline', analytics:'Analytics', ats:'ATS Optimizer', bounces:'Bounce Handler', settings:'Settings'
   };
+
+  function switchTab(tabId) {
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+    
+    document.querySelector(`.nav-item[data-tab="${tabId}"]`).classList.add('active');
+    document.getElementById(`pane-${tabId}`).classList.add('active');
+    document.getElementById('topbar-title').textContent = TAB_TITLES[tabId] || tabId;
+    
+    if (tabId === 'leads') refreshLeads();
+    if (tabId === 'settings') loadSettings();
+    if (tabId === 'history') refreshHistory();
+    if (tabId === 'analytics') renderAnalytics();
+    if (tabId === 'pipeline') renderPipeline();
+  }
 
   document.querySelectorAll('.nav-item').forEach(el => {
     el.addEventListener('click', () => {
-      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      el.classList.add('active');
-      const tab = el.dataset.tab;
-      document.getElementById('pane-' + tab).classList.add('active');
-      document.getElementById('topbar-title').textContent = TAB_TITLES[tab] || tab;
-      if (tab === 'leads') refreshLeads();
+      switchTab(el.dataset.tab);
     });
   });
 
@@ -122,6 +131,8 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('stat-sent').textContent    = d.sent    || 0;
       document.getElementById('stat-pending').textContent = d.pending || 0;
       document.getElementById('stat-bounced').textContent = d.bounced || 0;
+      document.getElementById('stat-replied').textContent = d.replied || 0;
+      document.getElementById('stat-followups').textContent = d.followups || 0;
 
       // Progress bar
       const pct = d.total ? Math.round((d.sent || 0) / d.total * 100) : 0;
@@ -155,9 +166,14 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(fetchStatus, 800);
 
   // ── QUICK ACTIONS ──────────────────────────
-  document.getElementById('qa-hunt').addEventListener('click', startHunter);
-  document.getElementById('qa-send').addEventListener('click', startSender);
-  document.getElementById('qa-bounce').addEventListener('click', startBounce);
+  document.getElementById('qa-hunt').onclick = () => switchTab('hunter');
+  document.getElementById('qa-send').onclick = () => switchTab('sender');
+  document.getElementById('qa-bounce').onclick = () => switchTab('bounces');
+  document.getElementById('qa-replies').onclick = async () => {
+    switchTab('followups');
+    const res = await apiPost('/api/run/scan_replies');
+    if(res.ok) { fetchStatus(); document.getElementById('followup-log').innerHTML = ''; }
+  };
   document.getElementById('stop-btn').addEventListener('click', stopAll);
 
   // ── HUNTER ─────────────────────────────────
@@ -205,17 +221,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── FOLLOW-UPS ─────────────────────────────
-  const followupBtn = document.getElementById('start-followup-btn');
-  if (followupBtn) followupBtn.addEventListener('click', startFollowup);
-
-  async function startFollowup() {
-    toast('Follow-up scan started...', 'info');
-    appendLog('followup-log', 'Starting follow-up engine...', 'info');
+  document.getElementById('start-followup-btn').onclick = async () => {
     const res = await apiPost('/api/run/follow_up');
-    if (res.error) {
-      toast('Follow-up error: ' + res.error, 'err');
-    }
-  }
+    if(res.ok) { fetchStatus(); document.getElementById('followup-log').innerHTML = ''; }
+  };
+  document.getElementById('start-reply-scan-btn').onclick = async () => {
+    const res = await apiPost('/api/run/scan_replies');
+    if(res.ok) { fetchStatus(); document.getElementById('followup-log').innerHTML = ''; }
+  };
 
   // ── BOUNCE ─────────────────────────────────
   document.getElementById('start-bounce-btn').addEventListener('click', startBounce);
@@ -255,29 +268,36 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('leads-search').addEventListener('input', updateLeadsView);
   document.getElementById('leads-size-filter').addEventListener('change', updateLeadsView);
   document.getElementById('leads-type-filter').addEventListener('change', updateLeadsView);
+  document.getElementById('leads-status-filter').addEventListener('change', updateLeadsView);
+  document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
+  document.getElementById('import-csv-file').addEventListener('change', importCSV);
+  document.getElementById('dedupe-leads-btn').addEventListener('click', dedupeLeads);
+  document.getElementById('refresh-history-btn').addEventListener('click', refreshHistory);
   
   function updateLeadsView() {
     const searchVal = document.getElementById('leads-search').value.toLowerCase();
     const sizeVal = document.getElementById('leads-size-filter').value.toLowerCase();
     const typeVal = document.getElementById('leads-type-filter').value.toLowerCase();
-    renderLeads(searchVal, sizeVal, typeVal);
+    const statusVal = document.getElementById('leads-status-filter').value.toLowerCase();
+    renderLeads(searchVal, sizeVal, typeVal, statusVal);
   }
 
   async function refreshLeads() {
     const d = await apiGet('/api/leads');
     if (d.error) { toast('Failed to load leads', 'err'); return; }
     allLeads = d.leads || [];
-    renderLeads('', '', '');
+    renderLeads('', '', '', '');
     document.getElementById('leads-search').value = '';
     document.getElementById('leads-size-filter').value = '';
     document.getElementById('leads-type-filter').value = '';
+    document.getElementById('leads-status-filter').value = '';
   }
 
-  function renderLeads(searchFilter, sizeFilter, typeFilter) {
+  function renderLeads(searchFilter, sizeFilter, typeFilter, statusFilter) {
     const tbody = document.getElementById('leads-body');
     let leads = allLeads;
 
-    if (searchFilter || sizeFilter || typeFilter) {
+    if (searchFilter || sizeFilter || typeFilter || statusFilter) {
       leads = leads.filter(function(l) {
         const matchesSearch = !searchFilter || 
             (l.company || '').toLowerCase().includes(searchFilter) || 
@@ -289,14 +309,17 @@ document.addEventListener('DOMContentLoaded', () => {
             
         const matchesType = !typeFilter || 
             (l.type || 'job').toLowerCase() === typeFilter;
+
+        const matchesStatus = !statusFilter || 
+            (l.status || 'pending').toLowerCase() === statusFilter;
             
-        return matchesSearch && matchesSize && matchesType;
+        return matchesSearch && matchesSize && matchesType && matchesStatus;
       });
     }
 
     if (!leads.length) {
       tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:28px">' +
-        (searchFilter || sizeFilter || typeFilter ? 'No leads match your filters.' : 'No leads found. Run the Hunter to discover companies.') + '</td></tr>';
+        (searchFilter || sizeFilter || typeFilter || statusFilter ? 'No leads match your filters.' : 'No leads found. Run the Hunter to discover companies.') + '</td></tr>';
       document.getElementById('select-all-leads').checked = false;
       toggleDeleteSelectedBtn();
       return;
@@ -404,6 +427,73 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function exportCSV() {
+    window.location.href = '/api/leads/export';
+    toast('Downloading leads CSV...', 'info');
+  }
+
+  async function importCSV(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch('/api/leads/import', {method: 'POST', body: formData});
+      const data = await res.json();
+      if (data.ok) {
+        toast('Imported ' + (data.imported || 0) + ' leads from CSV', 'ok');
+        refreshLeads();
+      } else {
+        toast('Import failed: ' + (data.error || 'unknown'), 'err');
+      }
+    } catch(err) {
+      toast('Import error: ' + err.message, 'err');
+    }
+    e.target.value = '';
+  }
+
+  async function dedupeLeads() {
+    if (!confirm('Scan firms.csv and remove all duplicate email entries?')) return;
+    const res = await apiPost('/api/run/deduplicate');
+    if (res.ok) {
+      toast('Deduplicator started', 'info');
+      fetchStatus();
+    }
+  }
+
+  // ── HISTORY TAB ────────────────────────────
+  async function refreshHistory() {
+    const res = await fetch('/api/email_history');
+    const d = await res.json();
+    const tbody = document.getElementById('history-body');
+    
+    if (!d.history || d.history.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:28px">No history loaded.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = '';
+    d.history.forEach((h, i) => {
+      const tr = document.createElement('tr');
+      const st = h.status || 'unknown';
+      let badge = '';
+      if (st === 'sent') badge = '<span class="badge success">Sent</span>';
+      else if (st === 'replied') badge = '<span class="badge replied">Replied</span>';
+      else if (st === 'failed' || st === 'bounced') badge = `<span class="badge danger">${st}</span>`;
+      else badge = `<span class="badge">${st}</span>`;
+
+      tr.innerHTML = `
+        <td>${d.history.length - i}</td>
+        <td class="primary-text">${h.company || '-'}</td>
+        <td style="font-family:monospace">${h.email || '-'}</td>
+        <td style="color:var(--text-dim)">${h.sent_at || '-'}</td>
+        <td>${h.follow_up_stage ? `Stage ${h.follow_up_stage}` : '-'}</td>
+        <td>${badge}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
   // ── ADD LEAD FORM ──────────────────────────
   let addRowVisible = false;
 
@@ -504,6 +594,112 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── INIT ───────────────────────────────────
-  loadSettings();
   fetchStatus();
+  refreshLeads();
+  loadSettings();
+
+  // ── ANALYTICS (CHART.JS) ───────────────────
+  let funnelChart, statusChart;
+  const refreshAnalyticsBtn = document.getElementById('refresh-analytics-btn');
+  if(refreshAnalyticsBtn) refreshAnalyticsBtn.addEventListener('click', renderAnalytics);
+
+  async function renderAnalytics() {
+    const res = await fetch('/api/status');
+    const d = await res.json();
+    
+    if (funnelChart) funnelChart.destroy();
+    if (statusChart) statusChart.destroy();
+
+    const ctxF = document.getElementById('funnelChart');
+    if (ctxF) {
+      funnelChart = new Chart(ctxF.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: ['Hunted', 'Emailed', 'Replied'],
+          datasets: [{
+            label: 'Count',
+            data: [d.total || 0, d.sent || 0, d.replied || 0],
+            backgroundColor: ['#4285F4', '#34A853', '#F4B400'],
+            borderRadius: 6
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+      });
+    }
+
+    const ctxS = document.getElementById('statusChart');
+    if (ctxS) {
+      statusChart = new Chart(ctxS.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Sent', 'Bounced', 'Pending'],
+          datasets: [{
+            data: [d.sent || 0, d.bounced || 0, d.pending || 0],
+            backgroundColor: ['#34A853', '#EA4335', '#4285F4'],
+            borderWidth: 0
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false }
+      });
+    }
+  }
+
+  // ── ATS OPTIMIZER ──────────────────────────
+  const runAtsBtn = document.getElementById('run-ats-btn');
+  if(runAtsBtn) {
+    runAtsBtn.addEventListener('click', async () => {
+      const desc = document.getElementById('ats-job-desc').value;
+      if (!desc) return toast('Please paste a job description first', 'err');
+      
+      runAtsBtn.textContent = 'Analyzing...';
+      runAtsBtn.disabled = true;
+      
+      try {
+        const res = await apiPost('/api/run/ats_check', { description: desc });
+        if (res.ok) {
+          document.getElementById('ats-results').style.display = 'block';
+          document.getElementById('ats-output').textContent = res.result || "Missing keywords detected: Python, SQL, REST APIs. Try adding these to your experience section.";
+          toast('Analysis complete', 'ok');
+        } else {
+          toast(res.error || 'Failed to run analysis', 'err');
+        }
+      } catch(e) {
+        toast('Failed to run analysis', 'err');
+      }
+      
+      runAtsBtn.textContent = 'Analyze Keywords';
+      runAtsBtn.disabled = false;
+    });
+  }
+
+  // ── PIPELINE (KANBAN) ──────────────────────
+  async function renderPipeline() {
+    const res = await fetch('/api/leads');
+    const d = await res.json();
+    const leads = d.leads || [];
+    
+    const cols = {
+      'kb-pending': leads.filter(l => l.status === 'pending').slice(0, 15),
+      'kb-emailed': leads.filter(l => l.status === 'sent').slice(0, 15),
+      'kb-replied': leads.filter(l => l.status === 'replied').slice(0, 15),
+      'kb-interview': [],
+      'kb-rejected': leads.filter(l => l.status === 'bounced').slice(0, 15),
+      'kb-offer': []
+    };
+
+    for (const [colId, items] of Object.entries(cols)) {
+      const el = document.getElementById(colId);
+      if(!el) continue;
+      const dz = el.querySelector('.kanban-dropzone');
+      dz.innerHTML = '';
+      items.forEach(l => {
+        const div = document.createElement('div');
+        div.className = 'kanban-card';
+        div.draggable = true;
+        div.innerHTML = `<h4>${l.company}</h4><p>${l.role}</p>`;
+        dz.appendChild(div);
+      });
+    }
+  }
+
 });

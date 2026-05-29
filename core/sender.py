@@ -181,6 +181,30 @@ def verify_mx(domain):
     return False
 
 
+def verify_smtp_mailbox(target_email, from_email):
+    """Deep SMTP Ping to verify mailbox existence."""
+    domain = target_email.split('@')[-1]
+    mx_record = None
+    try:
+        records = dns.resolver.resolve(domain, 'MX', lifetime=5)
+        mx_record = sorted(records, key=lambda rec: rec.preference)[0].exchange.to_text()
+    except Exception:
+        mx_record = domain
+        
+    try:
+        server = smtplib.SMTP(timeout=10)
+        server.connect(mx_record, 25)
+        server.helo(from_email.split('@')[-1] if '@' in from_email else 'localhost')
+        server.mail(from_email)
+        code, message = server.rcpt(target_email)
+        server.quit()
+        if code == 550:
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def _get_role_context(role: str, cfg: dict, lead_type: str = "job") -> dict:
     """Classify the role string into a category and return tailored copy blocks with comprehensive personalization."""
     role_lower = role.lower()
@@ -573,6 +597,7 @@ def send_emails():
 
     log = load_email_log()
     sent_count = 0
+    bounced_set = set(bounced)
 
     for i, firm in enumerate(to_send, 1):
         company = firm["company_name"]
@@ -583,10 +608,42 @@ def send_emails():
 
         print(f"[{i}/{len(to_send)}] Sending to {company} ({to_email})...")
 
+        # Poison Pill Domain check
+        if domain in bounced_set:
+            print(f"   Skipping {to_email} due to poison pill domain ({domain}).")
+            continue
+
+        # Role-Based Filter
+        prefix = to_email.split('@')[0].lower()
+        bad_prefixes = {'info', 'admin', 'support', 'contact', 'sales', 'hello', 'team'}
+        if prefix in bad_prefixes:
+            print(f"   Skipping {to_email} due to generic role prefix ({prefix}).")
+            log.append({
+                "company": company, "email": to_email,
+                "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "failed"
+            })
+            save_email_log(log)
+            continue
+
         # MX verification
         if not verify_mx(domain):
             print(f"   MX verification failed for {domain}. Skipping.")
             save_bounced_domain(domain)
+            bounced_set.add(domain)
+            log.append({
+                "company": company, "email": to_email,
+                "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "bounced"
+            })
+            save_email_log(log)
+            continue
+
+        # Deep SMTP Ping
+        if not verify_smtp_mailbox(to_email, cfg["email"]):
+            print(f"   SMTP mailbox verification failed for {to_email} (550). Skipping.")
+            save_bounced_domain(domain)
+            bounced_set.add(domain)
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -609,8 +666,23 @@ def send_emails():
                     alt_part = MIMEMultipart("alternative")
                     notes = firm.get("notes", "")
                     lead_type = firm.get("type", "job")
-                    alt_part.attach(MIMEText(get_email_plain(cfg, company, role, hr_name, notes, lead_type=lead_type), "plain"))
-                    alt_part.attach(MIMEText(get_email_html(cfg, company, role, hr_name, notes, lead_type=lead_type), "html"))
+                    
+                    plain_body = get_email_plain(cfg, company, role, hr_name, notes, lead_type=lead_type)
+                    html_body = get_email_html(cfg, company, role, hr_name, notes, lead_type=lead_type)
+                    
+                    if os.getenv("GEMINI_API_KEY"):
+                        try:
+                            from ai_engine import generate_custom_email
+                            print(f"   [AI] Generating personalized email for {company}...")
+                            new_plain = generate_custom_email(company, role, cfg.get("skills", ""), plain_body)
+                            if new_plain != plain_body:
+                                plain_body = new_plain
+                                html_body = f'<div style="font-family: sans-serif; line-height: 1.6;">{plain_body.replace(chr(10), "<br>")}</div>'
+                        except ImportError:
+                            pass
+
+                    alt_part.attach(MIMEText(plain_body, "plain"))
+                    alt_part.attach(MIMEText(html_body, "html"))
                     msg.attach(alt_part)
 
                     attach_resume(msg, cfg["resume"])
@@ -641,13 +713,15 @@ def send_emails():
 
             # Random delay
             if i < len(to_send):
-                delay = random.randint(cfg["delay_min"], cfg["delay_max"])
-                print(f"   Waiting {delay}s...")
+                base_delay = cfg["delay_min"]
+                delay = random.uniform(base_delay, base_delay * 1.5) + random.uniform(5, 15)
+                print(f"   Waiting {delay:.2f}s...")
                 time.sleep(delay)
 
         except Exception as e:
             print(f"   Failed: {e}")
             save_bounced_domain(domain)
+            bounced_set.add(domain)
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

@@ -6,7 +6,8 @@
 <title>JobHunter-AI</title>
 <meta name="description" content="AI-powered autonomous job application engine" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
@@ -41,6 +42,22 @@
         <div class="nav-item" data-tab="followups">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       <span class="nav-label">Follow-ups</span>
+    </div>
+    <div class="nav-item" data-tab="history">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span class="nav-label">History</span>
+    </div>
+    <div class="nav-item" data-tab="pipeline">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+      <span class="nav-label">Pipeline (Kanban)</span>
+    </div>
+    <div class="nav-item" data-tab="analytics">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      <span class="nav-label">Analytics</span>
+    </div>
+    <div class="nav-item" data-tab="ats">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      <span class="nav-label">ATS Optimizer</span>
     </div>
     <div class="nav-item" data-tab="bounces">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -88,6 +105,8 @@
           <div class="stat-box a3"><div class="stat-num" id="stat-sent">0</div><div class="stat-label">Emails Sent</div></div>
           <div class="stat-box a2"><div class="stat-num" id="stat-pending">0</div><div class="stat-label">Pending</div></div>
           <div class="stat-box a4"><div class="stat-num" id="stat-bounced">0</div><div class="stat-label">Bounced</div></div>
+          <div class="stat-box a5"><div class="stat-num" id="stat-replied">0</div><div class="stat-label">Replied</div></div>
+          <div class="stat-box a6"><div class="stat-num" id="stat-followups">0</div><div class="stat-label">Follow-ups Sent</div></div>
         </div>
         <div class="card">
           <div class="card-header">
@@ -118,7 +137,11 @@
             </button>
             <button class="btn" id="qa-bounce">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
-              Scan Bounces
+              Bounces
+            </button>
+            <button class="btn" id="qa-replies">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              Reply Scan
             </button>
             <button class="btn danger" id="stop-btn" style="display:none">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
@@ -240,21 +263,31 @@
             <div class="btn-row">
               <button class="btn sm" id="add-lead-toggle-btn">+ Add Lead</button>
               <button class="btn sm" id="refresh-leads-btn">&#8634; Refresh</button>
+              <button class="btn sm" id="export-csv-btn">&#8595; Export CSV</button>
+              <label class="btn sm" style="cursor:pointer;margin:0">&#8593; Import CSV<input type="file" id="import-csv-file" accept=".csv" style="display:none" /></label>
+              <button class="btn sm" id="dedupe-leads-btn">Remove Duplicates</button>
               <button class="btn sm danger" id="delete-selected-btn" style="display:none">Delete Selected</button>
               <button class="btn sm danger" id="clear-all-btn">Clear All</button>
               <button class="btn sm danger" id="clear-sent-btn">Clear Sent</button>
             </div>
           </div>
-          <div style="padding:12px 20px 0; display: flex; gap: 10px;">
-            <input class="field-input" id="leads-search" placeholder="Search leads by company, email or role..." style="margin-bottom:0; flex: 1;" />
+          <div style="padding:12px 20px 0; display: flex; gap: 10px; flex-wrap: wrap;">
+            <input class="field-input" id="leads-search" placeholder="Search leads by company, email or role..." style="margin-bottom:0; flex: 1; min-width:200px;" />
+            <select class="field-input" id="leads-status-filter" style="margin-bottom:0; width: 130px;">
+              <option value="">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="sent">Sent</option>
+              <option value="replied">Replied</option>
+              <option value="bounced">Bounced</option>
+            </select>
             <select class="field-input" id="leads-type-filter" style="margin-bottom:0; width: 140px;">
               <option value="">All Types</option>
               <option value="job">Jobs</option>
               <option value="internship">Internships</option>
               <option value="trainee">Trainees</option>
             </select>
-            <select class="field-input" id="leads-size-filter" style="margin-bottom:0; width: 180px;">
-              <option value="">All Firm Sizes</option>
+            <select class="field-input" id="leads-size-filter" style="margin-bottom:0; width: 160px;">
+              <option value="">All Sizes</option>
               <option value="Startup">Startup</option>
               <option value="Small">Small</option>
               <option value="Mid-size">Mid-size</option>
@@ -276,7 +309,7 @@
         </div>
       </div>
 
-            <!-- ══ FOLLOW-UPS ══ -->
+      <!-- ══ FOLLOW-UPS ══ -->
       <div class="tab-pane" id="pane-followups">
         <div class="card">
           <div class="card-header"><span class="card-title">3-Stage Follow-up System</span></div>
@@ -285,12 +318,115 @@
           </p>
           <div class="btn-row">
             <button class="btn primary" id="start-followup-btn">Scan & Send Follow-ups</button>
+            <button class="btn" id="start-reply-scan-btn">Scan for Replies First</button>
           </div>
         </div>
         <div class="card">
           <div class="card-header"><span class="card-title">Follow-up Log</span></div>
           <div class="log-box" id="followup-log">
             <div class="log-line info"><span class="ts">[ready]</span>Click Scan & Send to begin.</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ══ HISTORY ══ -->
+      <div class="tab-pane" id="pane-history">
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div class="card-header" style="padding:16px 20px 0">
+            <span class="card-title">email_log.json &mdash; Email History</span>
+            <div class="btn-row">
+              <button class="btn sm" id="refresh-history-btn">&#8634; Refresh</button>
+            </div>
+          </div>
+          <div style="overflow-x:auto;margin-top:12px;max-height:600px;overflow-y:auto;">
+            <table class="leads-table" id="history-table">
+              <thead><tr>
+                <th>#</th><th>Company</th><th>Email</th><th>Sent At</th><th>Stage</th><th>Status</th>
+              </tr></thead>
+              <tbody id="history-body">
+                <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:28px">No history loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ PIPELINE (KANBAN) ══ -->
+      <div class="tab-pane" id="pane-pipeline">
+        <div class="card" style="background:transparent; border:none; box-shadow:none; padding:0;">
+          <div class="card-header"><span class="card-title">Application Pipeline</span></div>
+          <div class="kanban-board">
+            <div class="kanban-column" id="kb-pending">
+              <div class="kanban-col-header">Pending</div>
+              <div class="kanban-dropzone"></div>
+            </div>
+            <div class="kanban-column" id="kb-emailed">
+              <div class="kanban-col-header" style="color:var(--primary)">Emailed</div>
+              <div class="kanban-dropzone"></div>
+            </div>
+            <div class="kanban-column" id="kb-replied">
+              <div class="kanban-col-header" style="color:var(--accent2)">Replied</div>
+              <div class="kanban-dropzone"></div>
+            </div>
+            <div class="kanban-column" id="kb-interview">
+              <div class="kanban-col-header" style="color:#b464ff">Interviewing</div>
+              <div class="kanban-dropzone"></div>
+            </div>
+            <div class="kanban-column" id="kb-rejected">
+              <div class="kanban-col-header" style="color:var(--danger)">Rejected</div>
+              <div class="kanban-dropzone"></div>
+            </div>
+            <div class="kanban-column" id="kb-offer">
+              <div class="kanban-col-header" style="color:var(--success)">Offer</div>
+              <div class="kanban-dropzone"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ ANALYTICS ══ -->
+      <div class="tab-pane" id="pane-analytics">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Campaign Analytics</span>
+            <div class="btn-row"><button class="btn sm" id="refresh-analytics-btn">&#8634; Refresh</button></div>
+          </div>
+          <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top:16px;">
+            <div style="flex:1; min-width:300px; background:var(--bg-subtle); padding:16px; border-radius:12px; border:1px solid var(--border)">
+              <h4 style="margin:0 0 16px; font-weight:600; color:var(--text)">Funnel Overview</h4>
+              <div style="position: relative; height: 300px; width: 100%;">
+                <canvas id="funnelChart"></canvas>
+              </div>
+            </div>
+            <div style="flex:1; min-width:300px; background:var(--bg-subtle); padding:16px; border-radius:12px; border:1px solid var(--border)">
+              <h4 style="margin:0 0 16px; font-weight:600; color:var(--text)">Response Status</h4>
+              <div style="position: relative; height: 300px; width: 100%;">
+                <canvas id="statusChart"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ ATS OPTIMIZER ══ -->
+      <div class="tab-pane" id="pane-ats">
+        <div class="card">
+          <div class="card-header"><span class="card-title">ATS Resume Optimizer</span></div>
+          <p style="font-size:13px; color:var(--text-dim); margin-bottom:16px; line-height:1.6">
+            Paste a Job Description below. The AI will cross-reference it with your skills (from Settings) and tell you exactly which keywords you are missing so you can beat the Applicant Tracking System.
+          </p>
+          <div class="form-grid" style="grid-template-columns: 1fr;">
+            <div class="field-group">
+              <label>Target Job Description</label>
+              <textarea class="field-input" id="ats-job-desc" rows="6" placeholder="Paste the job description here..."></textarea>
+            </div>
+          </div>
+          <div style="margin-top:16px;">
+            <button class="btn primary" id="run-ats-btn">Analyze Keywords</button>
+          </div>
+          <div id="ats-results" style="margin-top:20px; display:none;">
+            <h4 style="margin:0 0 12px; font-weight:600;">Analysis Results</h4>
+            <div style="background:var(--bg-subtle); padding:16px; border-radius:8px; border:1px solid var(--border); font-size:14px; white-space:pre-wrap; line-height:1.6;" id="ats-output"></div>
           </div>
         </div>
       </div>
@@ -348,6 +484,19 @@
             <div class="field-group"><label class="field-label">Max Sends per Day</label><input class="field-input" id="cfg-maxday" type="number" value="50" /></div>
           </div>
 
+          <div class="settings-section" style="margin-top:24px">Integrations (V2.0)</div>
+          <div class="form-grid">
+            <div class="field-group">
+              <label class="field-label">Gemini API Key (for AI Emails)</label>
+              <input class="field-input" type="password" id="cfg-gemini-key" placeholder="AIzaSy..." />
+            </div>
+            <div class="field-group">
+              <label class="field-label">ZeroBounce API Key (for Validation)</label>
+              <input class="field-input" type="password" id="cfg-zerobounce-key" placeholder="ZB-..." />
+            </div>
+          </div>
+
+          <div class="settings-section" style="margin-top:24px">Gmail Config</div>
           <div class="btn-row" style="margin-top:8px">
             <button class="btn primary" id="save-settings-btn">Save to .env</button>
             <button class="btn" id="load-settings-btn">Reload from .env</button>

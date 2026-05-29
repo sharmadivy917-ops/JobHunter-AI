@@ -127,6 +127,16 @@ def generate_queries(roles, locations, experience, company_size, target_type):
             queries.append(f'{type_prefix}{role} {exp_kws[0]} {loc} company careers email')
             queries.append(f'{type_prefix}{role} {size_kws[0]} {loc} hiring contact HR')
 
+        # Career page specific queries
+        queries.append(f'{type_prefix}{role} company "careers page" email apply')
+        queries.append(f'{type_prefix}{role} "we are hiring" email HR contact')
+        queries.append(f'{type_prefix}{role} "apply now" company email india')
+        queries.append(f'{type_prefix}{role} "open positions" company HR email')
+
+        # Job board and aggregator queries
+        queries.append(f'{type_prefix}site:angel.co {role} hiring')
+        queries.append(f'{type_prefix}{role} "send your resume to" OR "mail your resume"')
+
         # General fallbacks
         queries.append(f'{role} companies list HR data email')
         queries.append(f'"{role}" hiring contact email resume')
@@ -371,6 +381,49 @@ def scrape_emails_from_url(url, session):
         return set()
 
 
+def deep_crawl_career_page(base_url, session):
+    """Follow internal /careers, /jobs, /work-with-us links to find more email addresses."""
+    emails = set()
+    try:
+        res = session.get(base_url, timeout=10, allow_redirects=True)
+        if res.status_code != 200:
+            return emails
+
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        # Find career-related internal links
+        career_keywords = ['career', 'job', 'hiring', 'work-with', 'join-us', 'openings', 'apply', 'vacancy']
+        career_links = set()
+
+        for a in soup.find_all('a', href=True):
+            href = a['href'].lower()
+            if any(kw in href for kw in career_keywords):
+                # Resolve relative URLs
+                full_url = href
+                if href.startswith('/'):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(base_url)
+                    full_url = f"{parsed.scheme}://{parsed.netloc}{href}"
+                elif not href.startswith('http'):
+                    full_url = base_url.rstrip('/') + '/' + href
+
+                if full_url.startswith('http'):
+                    career_links.add(full_url)
+
+        # Visit up to 3 career subpages
+        for link in list(career_links)[:3]:
+            try:
+                sub_res = session.get(link, timeout=8, allow_redirects=True)
+                if sub_res.status_code == 200:
+                    emails.update(EMAIL_REGEX.findall(sub_res.text[:300000]))
+            except:
+                pass
+            time.sleep(0.5)
+    except:
+        pass
+    return emails
+
+
 # ══════════════════════════════════════════════
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════
@@ -469,6 +522,27 @@ def hunt_for_companies():
                 ("Google", "careers@google.com"),
                 ("Meta", "careers@meta.com"),
                 ("Apple", "careers@apple.com"),
+                # Expanded list
+                ("Oracle", "careers@oracle.com"),
+                ("SAP Labs", "careers@sap.com"),
+                ("Salesforce", "careers@salesforce.com"),
+                ("Adobe", "careers@adobe.com"),
+                ("VMware", "careers@vmware.com"),
+                ("Dell Technologies", "careers@dell.com"),
+                ("HP Inc", "careers@hp.com"),
+                ("Cisco", "careers@cisco.com"),
+                ("Intel", "careers@intel.com"),
+                ("Qualcomm", "careers@qualcomm.com"),
+                ("NVIDIA", "careers@nvidia.com"),
+                ("PayPal", "careers@paypal.com"),
+                ("Uber", "careers@uber.com"),
+                ("Flipkart", "careers@flipkart.com"),
+                ("PhonePe", "careers@phonepe.com"),
+                ("Swiggy", "careers@swiggy.in"),
+                ("Razorpay", "careers@razorpay.com"),
+                ("Atlassian", "careers@atlassian.com"),
+                ("ServiceNow", "careers@servicenow.com"),
+                ("Thoughtworks", "careers@thoughtworks.com"),
             ]
         
         file_exists = os.path.exists(FIRMS_CSV)
@@ -517,7 +591,7 @@ def hunt_for_companies():
         # Visit top pages and scrape emails
         pages_checked = 0
         for url in result_urls:
-            if url in visited_urls or pages_checked >= 5:
+            if url in visited_urls or pages_checked >= 8:
                 continue
             visited_urls.add(url)
 
@@ -526,6 +600,10 @@ def hunt_for_companies():
 
             pages_checked += 1
             raw_emails = scrape_emails_from_url(url, session)
+            # Deep-crawl if this looks like a company homepage
+            if not any(skip in url for skip in ['indeed', 'glassdoor', 'naukri', 'linkedin']):
+                deep_emails = deep_crawl_career_page(url, session)
+                raw_emails = raw_emails.union(deep_emails)
 
             for email in raw_emails:
                 email = email.lower().strip()

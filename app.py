@@ -47,6 +47,8 @@ def get_stats():
     """Compute live stats from files."""
     sent_emails = set()
     bounced_emails_log = set()
+    replied_count = 0
+    followup_count = 0
     if os.path.exists(EMAIL_LOG):
         try:
             with open(EMAIL_LOG, 'r') as f:
@@ -56,8 +58,14 @@ def get_stats():
                     em = e.get('email', '').lower().strip()
                     if st == 'sent':
                         sent_emails.add(em)
+                    elif st == 'replied':
+                        replied_count += 1
                     elif st in ['bounced', 'failed']:
                         bounced_emails_log.add(em)
+                    # Count follow-up stages
+                    fus = e.get('follow_up_stage', 0)
+                    if fus and fus > 0:
+                        followup_count += fus
         except:
             pass
 
@@ -91,7 +99,8 @@ def get_stats():
             pass
 
     total_bounced = max(bounced_in_csv, len(bounced_domains), len(bounced_emails_log))
-    return {"total": total, "sent": sent, "pending": pending, "bounced": total_bounced}
+    return {"total": total, "sent": sent, "pending": pending, "bounced": total_bounced,
+            "replied": replied_count, "followups": followup_count}
 
 
 def run_script(script_name, env_overrides=None):
@@ -226,6 +235,49 @@ def run_action(action):
         t = threading.Thread(target=run_script, args=("bounce_handler.py",))
         t.daemon = True
         t.start()
+
+    elif action == 'scan_replies':
+        t = threading.Thread(target=run_script, args=("reply_scanner.py",))
+        t.daemon = True
+        t.start()
+        
+    elif action == 'deduplicate':
+        t = threading.Thread(target=run_script, args=("deduplicate_leads.py",))
+        t.daemon = True
+        t.start()
+
+    elif action == 'ats_check':
+        # Provide instant ATS check using Gemini API (if available)
+        desc = data.get('description', '')
+        user_skills = os.getenv("YOUR_SKILLS", "")
+        if not desc:
+            return jsonify({"error": "No description provided."})
+        
+        try:
+            import google.generativeai as genai
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                return jsonify({"error": "Please set GEMINI_API_KEY in settings to use ATS Optimizer."})
+            
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            
+            prompt = f"""
+            You are an expert ATS (Applicant Tracking System) optimizer.
+            The user has these skills: {user_skills}
+            
+            They want to apply for a job with this description:
+            {desc}
+            
+            Compare their skills to the job description. Output a concise list of KEYWORDS or SKILLS they are missing that they should add to their resume to beat the ATS.
+            Keep it brief, actionable, and formatted nicely. Do NOT output markdown headers, just bullet points.
+            """
+            
+            response = model.generate_content(prompt)
+            return jsonify({"ok": True, "result": response.text})
+            
+        except Exception as e:
+            return jsonify({"error": f"AI error: {str(e)}"})
 
     else:
         return jsonify({"error": f"Unknown action: {action}"})
@@ -429,6 +481,65 @@ def clear_all_leads():
     return jsonify({"ok": True})
 
 
+@app.route('/api/leads/export')
+def export_leads():
+    """Download firms.csv directly."""
+    from flask import send_file
+    if not os.path.exists(FIRMS_CSV):
+        return jsonify({"error": "No leads file"}), 404
+    return send_file(FIRMS_CSV, mimetype='text/csv', as_attachment=True, download_name='leads_export.csv')
+
+
+@app.route('/api/leads/import', methods=['POST'])
+def import_leads():
+    """Import leads from uploaded CSV file."""
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    
+    file = request.files['file']
+    if not file.filename.endswith('.csv'):
+        return jsonify({"error": "Only CSV files are supported"}), 400
+    
+    try:
+        content = file.read().decode('utf-8')
+        reader = csv.DictReader(content.splitlines())
+        
+        existing = set()
+        if os.path.exists(FIRMS_CSV):
+            with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    existing.add(row.get('contact_email', '').lower().strip())
+        
+        fieldnames = ['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type']
+        file_exists = os.path.exists(FIRMS_CSV)
+        added = 0
+        
+        with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            
+            for row in reader:
+                email = (row.get('contact_email') or row.get('email', '')).lower().strip()
+                if not email or email in existing:
+                    continue
+                writer.writerow({
+                    'company_name': row.get('company_name') or row.get('company', 'Unknown'),
+                    'contact_email': email,
+                    'role': row.get('role', 'Software Developer'),
+                    'hr_name': row.get('hr_name') or row.get('hr', 'HR Team'),
+                    'notes': row.get('notes', 'Imported from CSV'),
+                    'type': row.get('type', 'job'),
+                })
+                existing.add(email)
+                added += 1
+        
+        add_log(f"Imported {added} leads from CSV", "ok")
+        return jsonify({"ok": True, "imported": added})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 @app.route('/api/clear_sent', methods=['POST'])
 def clear_sent():
@@ -466,6 +577,23 @@ def clear_sent():
     return jsonify({"ok": True})
 
 
+@app.route('/api/email_history')
+def get_email_history():
+    history = []
+    if os.path.exists(EMAIL_LOG):
+        try:
+            with open(EMAIL_LOG, 'r') as f:
+                history = json.load(f)
+        except:
+            pass
+    # Sort history by sent_at descending
+    history.sort(key=lambda x: x.get('sent_at', ''), reverse=True)
+    return jsonify({"history": history})
+
+@app.route('/api/run/ats_check', methods=['POST'])
+def run_ats_check():
+    return jsonify({"ok": True, "message": "ATS check triggered"})
+
 # ── Settings ──────────────────────────────────
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -494,6 +622,8 @@ def settings():
         "LOCATIONS":      os.getenv("LOCATIONS", "Remote, India"),
         "SEND_DELAY":     os.getenv("SEND_DELAY", "10"),
         "MAX_DAY":        os.getenv("MAX_DAY", "50"),
+        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
+        "ZEROBOUNCE_API_KEY": os.getenv("ZEROBOUNCE_API_KEY", ""),
     })
 
 

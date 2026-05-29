@@ -191,7 +191,7 @@ html, body {
 /* ── STAT GRID ──────────────────────────── */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -216,6 +216,8 @@ html, body {
 .stat-box.a2::after { background: var(--accent2); }
 .stat-box.a3::after { background: var(--success); }
 .stat-box.a4::after { background: var(--danger); }
+.stat-box.a5::after { background: var(--accent2); }
+.stat-box.a6::after { background: #b464ff; }
 .stat-num {
   font-family: var(--display);
   font-size: 28px;
@@ -433,6 +435,60 @@ select.field-input { cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* ── RESPONSIVE ─────────────────────────── */
+/* ── KANBAN BOARD ───────────────────────── */
+.kanban-board {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 12px 0;
+  min-height: 500px;
+}
+.kanban-column {
+  flex: 0 0 260px;
+  background: var(--bg-subtle);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.kanban-col-header {
+  padding: 16px;
+  font-weight: 600;
+  font-size: 15px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 12px 12px 0 0;
+}
+.kanban-dropzone {
+  flex: 1;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100px;
+}
+.kanban-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: grab;
+  font-size: 13px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+.kanban-card:active {
+  cursor: grabbing;
+}
+.kanban-card h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: var(--text);
+}
+.kanban-card p {
+  margin: 0;
+  color: var(--text-dim);
+}
+
 @media (max-width: 900px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
