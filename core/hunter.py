@@ -16,9 +16,12 @@ import json
 import time
 import io
 import sys
-import urllib.parse
-import dns.resolver
+from urllib.parse import urlparse
 from dotenv import load_dotenv
+from core.email_validator import verify_mx, is_generic_email
+
+# MX lookup cache
+_mx_cache = {}
 
 # Fix Windows console encoding
 if sys.stdout.encoding != 'utf-8':
@@ -43,8 +46,7 @@ load_dotenv(ENV_FILE)
 EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b')
 
 VALID_EMAIL_KEYWORDS = ['hr@', 'career', 'job', 'join', 'talent', 'resume',
-                        'recruit', 'hiring', 'info@', 'contact@', 'admin@',
-                        'office@', 'apply', 'enquir', 'support@', 'careers@']
+                        'recruit', 'hiring', 'careers@']
 
 INVALID_DOMAINS = {'example.com', 'email.com', 'yourdomain.com', 'test.com',
                    'domain.com', 'sentry.io', 'wixpress.com', 'w3.org',
@@ -56,7 +58,7 @@ INVALID_DOMAINS = {'example.com', 'email.com', 'yourdomain.com', 'test.com',
                    'brave.com', 'yahoo.com', 'yandex.com', 'github.com'}
 
 GENERIC_PROVIDERS = {'gmail', 'yahoo', 'outlook', 'hotmail',
-                     'protonmail', 'aol', 'live.com', 'icloud',
+                     'protonmail', 'aol', 'live', 'icloud',
                      'rediffmail'}
 
 SKIP_SITES = ['linkedin.com', 'indeed.com', 'glassdoor.com', 'youtube.com',
@@ -109,6 +111,9 @@ def generate_queries(roles, locations, experience, company_size, target_type):
     type_prefix = f"{type_kw} " if type_kw else ""
 
     for role in roles:
+        # Move urlparse import to module level for performance
+        # (currently not used in this loop, but added for future use)
+        
         # Core queries with experience
         for ekw in exp_kws[:2]:
             queries.append(f'{type_prefix}{role} {ekw} careers email apply')
@@ -171,15 +176,6 @@ def load_bounced_domains():
 
 
 
-def verify_mx(domain):
-    """Check if a domain has valid MX records."""
-    try:
-        records = dns.resolver.resolve(domain, 'MX')
-        return len(records) > 0
-    except:
-        return False
-
-
 def is_valid_email(email):
     email = email.lower().strip()
     if not EMAIL_REGEX.fullmatch(email):
@@ -187,7 +183,15 @@ def is_valid_email(email):
     domain = email.split('@')[1]
     if domain in INVALID_DOMAINS:
         return False
-    if any(gp in domain for gp in GENERIC_PROVIDERS):
+    # Exact domain matching for generic providers (not substring matching)
+    # This prevents false positives like 'live.com' matching 'olivecorp.com'
+    if domain in GENERIC_PROVIDERS or domain.endswith('.' + 'gmail.com'):
+        return False
+    # Check for exact domain matches for specific generic providers
+    for gp in ['yahoo.com', 'outlook.com', 'hotmail.com', 'protonmail.com', 'aol.com', 'live.com', 'icloud.com', 'rediffmail.com', 'gmail.com']:
+        if domain == gp:
+            return False
+    if is_generic_email(email): # also exclude support/admin
         return False
     if any(email.endswith(e) for e in BAD_EXTENSIONS):
         return False
@@ -607,7 +611,13 @@ def hunt_for_companies():
 
             for email in raw_emails:
                 email = email.lower().strip()
-                domain = email.split('@')[1] if '@' in email else ''
+                email = re.sub(r'^(u003e|u003c|x22|22)+', '', email)
+                if not '@' in email: continue
+                
+                prefix = email.split('@')[0]
+                if prefix in {'info', 'admin', 'support', 'contact', 'sales', 'hello', 'team'}: continue
+                
+                domain = email.split('@')[1]
 
                 if (email not in existing_emails
                         and is_valid_email(email)

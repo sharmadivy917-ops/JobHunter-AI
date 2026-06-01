@@ -4,7 +4,6 @@ import csv
 import json
 import threading
 import subprocess
-from collections import deque
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv, set_key
@@ -15,6 +14,9 @@ ENV_FILE = os.path.join(BASE_DIR, '.env')
 FIRMS_CSV = os.path.join(BASE_DIR, 'firms.csv')
 EMAIL_LOG = os.path.join(BASE_DIR, 'email_log.json')
 BOUNCED_JSON = os.path.join(BASE_DIR, 'bounced_domains.json')
+
+# File locking to prevent race conditions between main app and subprocess scripts
+file_lock = threading.Lock()
 
 if not os.path.exists(ENV_FILE):
     open(ENV_FILE, 'w').close()
@@ -98,12 +100,13 @@ def get_stats():
         except:
             pass
 
-    total_bounced = max(bounced_in_csv, len(bounced_domains), len(bounced_emails_log))
+    # Use union count for bounced: combined from domain bounce list + email bounce log
+    total_bounced = len(bounced_domains) + len(bounced_emails_log)
     return {"total": total, "sent": sent, "pending": pending, "bounced": total_bounced,
             "replied": replied_count, "followups": followup_count}
 
 
-def run_script(script_name, env_overrides=None):
+def run_script(script_name, env_overrides=None, script_args=None):
     """Run a core script in a subprocess, streaming output to the log."""
     with lock:
         if state["running"]:
@@ -128,10 +131,16 @@ def run_script(script_name, env_overrides=None):
         if env_overrides:
             env.update(env_overrides)
 
+        # Ensure BASE_DIR is in PYTHONPATH so absolute imports work
+        env['PYTHONPATH'] = BASE_DIR + os.pathsep + env.get('PYTHONPATH', '')
+
         # Force unbuffered output so logs stream line-by-line
         env['PYTHONUNBUFFERED'] = '1'
 
         cmd = [sys.executable, '-u', os.path.join(BASE_DIR, "core", script_name)]
+        if script_args:
+            cmd.extend(script_args)
+            
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding='utf-8', errors='replace',
@@ -227,7 +236,7 @@ def run_action(action):
         t.start()
 
     elif action == 'follow_up':
-        t = threading.Thread(target=run_script, args=("follow_up.py",))
+        t = threading.Thread(target=run_script, args=("follow_up.py",), kwargs={"script_args": ["--auto"]})
         t.daemon = True
         t.start()
 
@@ -372,19 +381,20 @@ def add_lead():
     if not company or not email:
         return jsonify({"error": "Company and email are required"}), 400
 
-    file_exists = os.path.exists(FIRMS_CSV)
-    with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type'])
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({
-            'company_name': company,
-            'contact_email': email,
-            'role': role,
-            'hr_name': hr,
-            'notes': 'Manually added',
-            'type': lead_type
-        })
+    with file_lock:
+        file_exists = os.path.exists(FIRMS_CSV)
+        with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type'])
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({
+                'company_name': company,
+                'contact_email': email,
+                'role': role,
+                'hr_name': hr,
+                'notes': 'Manually added',
+                'type': lead_type
+            })
 
     add_log(f"Lead added: {company} ({email})", "ok")
     return jsonify({"ok": True})
@@ -395,27 +405,30 @@ def delete_lead(email):
     if not os.path.exists(FIRMS_CSV):
         return jsonify({"error": "No leads file"}), 404
 
-    rows = []
-    fieldnames = None
-    with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        for row in reader:
-            if row.get('contact_email') != email:
-                rows.append(row)
+    with file_lock:
+        rows = []
+        fieldnames = None
+        with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                if row.get('contact_email') != email:
+                    rows.append(row)
 
-    with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+        with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     add_log(f"Lead deleted: {email}", "ok")
     return jsonify({"ok": True})
 
 
-@app.route('/api/leads/<path:email>/replied', methods=['POST'])
-def mark_replied(email):
+@app.route('/api/leads/<path:email>/status', methods=['POST'])
+def update_status(email):
     email = email.lower().strip()
+    data = request.json or {}
+    new_status = data.get('status', 'replied')
     try:
         with open(EMAIL_LOG, 'r') as f:
             log = json.load(f)
@@ -423,24 +436,24 @@ def mark_replied(email):
         log = []
 
     updated = False
-    for entry in log:
+    # Update only the latest entry for this email
+    for entry in reversed(log):
         if entry.get('email', '').lower().strip() == email:
-            entry['status'] = 'replied'
+            entry['status'] = new_status
             updated = True
+            break
             
     if not updated:
+        # Create a stub entry so we can track status even if not emailed yet
         log.append({
-            "company": "Manual Entry",
             "email": email,
-            "role": "Unknown",
-            "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "replied"
+            "status": new_status,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
-
+        
     with open(EMAIL_LOG, 'w') as f:
-        json.dump(log, f, indent=2)
-
-    add_log(f"Marked {email} as replied.", "ok")
+        json.dump(log, f, indent=4)
+        
     return jsonify({"ok": True})
 
 
@@ -455,19 +468,20 @@ def delete_bulk_leads():
     if not emails_to_delete:
         return jsonify({"ok": True})
 
-    rows = []
-    fieldnames = None
-    with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        for row in reader:
-            if row.get('contact_email', '').lower().strip() not in emails_to_delete:
-                rows.append(row)
+    with file_lock:
+        rows = []
+        fieldnames = None
+        with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                if row.get('contact_email', '').lower().strip() not in emails_to_delete:
+                    rows.append(row)
 
-    with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+        with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     add_log(f"Deleted {len(emails_to_delete)} selected leads", "ok")
     return jsonify({"ok": True})
@@ -475,8 +489,9 @@ def delete_bulk_leads():
 
 @app.route('/api/clear_all_leads', methods=['POST'])
 def clear_all_leads():
-    if os.path.exists(FIRMS_CSV):
-        os.remove(FIRMS_CSV)
+    with file_lock:
+        if os.path.exists(FIRMS_CSV):
+            os.remove(FIRMS_CSV)
     add_log("All leads cleared", "ok")
     return jsonify({"ok": True})
 
@@ -504,35 +519,36 @@ def import_leads():
         content = file.read().decode('utf-8')
         reader = csv.DictReader(content.splitlines())
         
-        existing = set()
-        if os.path.exists(FIRMS_CSV):
-            with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-                for row in csv.DictReader(f):
-                    existing.add(row.get('contact_email', '').lower().strip())
-        
-        fieldnames = ['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type']
-        file_exists = os.path.exists(FIRMS_CSV)
-        added = 0
-        
-        with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
+        with file_lock:
+            existing = set()
+            if os.path.exists(FIRMS_CSV):
+                with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+                    for row in csv.DictReader(f):
+                        existing.add(row.get('contact_email', '').lower().strip())
             
-            for row in reader:
-                email = (row.get('contact_email') or row.get('email', '')).lower().strip()
-                if not email or email in existing:
-                    continue
-                writer.writerow({
-                    'company_name': row.get('company_name') or row.get('company', 'Unknown'),
-                    'contact_email': email,
-                    'role': row.get('role', 'Software Developer'),
-                    'hr_name': row.get('hr_name') or row.get('hr', 'HR Team'),
-                    'notes': row.get('notes', 'Imported from CSV'),
-                    'type': row.get('type', 'job'),
-                })
-                existing.add(email)
-                added += 1
+            fieldnames = ['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type']
+            file_exists = os.path.exists(FIRMS_CSV)
+            added = 0
+            
+            with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if not file_exists:
+                    writer.writeheader()
+                
+                for row in reader:
+                    email = (row.get('contact_email') or row.get('email', '')).lower().strip()
+                    if not email or email in existing:
+                        continue
+                    writer.writerow({
+                        'company_name': row.get('company_name') or row.get('company', 'Unknown'),
+                        'contact_email': email,
+                        'role': row.get('role', 'Software Developer'),
+                        'hr_name': row.get('hr_name') or row.get('hr', 'HR Team'),
+                        'notes': row.get('notes', 'Imported from CSV'),
+                        'type': row.get('type', 'job'),
+                    })
+                    existing.add(email)
+                    added += 1
         
         add_log(f"Imported {added} leads from CSV", "ok")
         return jsonify({"ok": True, "imported": added})
@@ -559,19 +575,20 @@ def clear_sent():
     if not sent_emails:
         return jsonify({"ok": True})
 
-    rows = []
-    fieldnames = None
-    with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        for row in reader:
-            if row.get('contact_email', '').lower().strip() not in sent_emails:
-                rows.append(row)
+    with file_lock:
+        rows = []
+        fieldnames = None
+        with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                if row.get('contact_email', '').lower().strip() not in sent_emails:
+                    rows.append(row)
 
-    with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+        with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     add_log(f"Cleared {len(sent_emails)} sent leads from CSV", "ok")
     return jsonify({"ok": True})
@@ -590,18 +607,55 @@ def get_email_history():
     history.sort(key=lambda x: x.get('sent_at', ''), reverse=True)
     return jsonify({"history": history})
 
-@app.route('/api/run/ats_check', methods=['POST'])
-def run_ats_check():
-    return jsonify({"ok": True, "message": "ATS check triggered"})
+
+@app.route('/api/preview_email', methods=['GET'])
+def preview_email():
+    """Generates an HTML preview of the email with current settings."""
+    try:
+        sys.path.append(BASE_DIR)
+        from core.sender import get_email_html, _get_role_context, PS_LINES
+        import random
+        
+        cfg = {
+            "name": os.getenv("YOUR_NAME", "John Doe"),
+            "title": os.getenv("YOUR_TITLE", "Software Engineer"),
+            "skills": os.getenv("YOUR_SKILLS", "Python, React"),
+            "portfolio": os.getenv("YOUR_PORTFOLIO", ""),
+            "linkedin": os.getenv("YOUR_LINKEDIN", ""),
+            "phone": os.getenv("PHONE", ""),
+            "email": os.getenv("EMAIL", "test@example.com")
+        }
+        
+        company = "Acme Corp"
+        role = "Backend Developer"
+        hr_name = "Hiring Manager"
+        notes = "Focus on cloud infrastructure."
+        lead_type = "job"
+        
+        ctx = _get_role_context(role, cfg, lead_type)
+        ps_pool = PS_LINES.get(lead_type, PS_LINES["job"])
+        ps_text = random.choice(ps_pool).format(phone=cfg.get("phone", ""))
+        
+        html = get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes, lead_type)
+        return jsonify({"ok": True, "html": html})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
 
 # ── Settings ──────────────────────────────────
 
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
+    ALLOWED_KEYS = {
+        "YOUR_NAME", "YOUR_TITLE", "YOUR_SKILLS", "RESUME_PATH", "YOUR_PORTFOLIO",
+        "YOUR_LINKEDIN", "PHONE", "EMAIL", "APP_PASSWORD", "ROLES", "LOCATIONS",
+        "SEND_DELAY", "MAX_DAY", "GEMINI_API_KEY", "ZEROBOUNCE_API_KEY", "AI_CUSTOM_PROMPT"
+    }
+    
     if request.method == 'POST':
         data = request.json or {}
         for key, value in data.items():
-            if value is not None:
+            if key.upper() in ALLOWED_KEYS and value is not None:
                 set_key(ENV_FILE, key.upper(), str(value))
         load_dotenv(ENV_FILE, override=True)
         return jsonify({"ok": True})
@@ -617,13 +671,14 @@ def settings():
         "YOUR_LINKEDIN":  os.getenv("YOUR_LINKEDIN", ""),
         "PHONE":          os.getenv("PHONE", ""),
         "EMAIL":          os.getenv("EMAIL", ""),
-        "APP_PASSWORD":   os.getenv("APP_PASSWORD", ""),
+        "APP_PASSWORD":   "***" if os.getenv("APP_PASSWORD") else "",
         "ROLES":          os.getenv("ROLES", ""),
         "LOCATIONS":      os.getenv("LOCATIONS", "Remote, India"),
         "SEND_DELAY":     os.getenv("SEND_DELAY", "10"),
         "MAX_DAY":        os.getenv("MAX_DAY", "50"),
-        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
-        "ZEROBOUNCE_API_KEY": os.getenv("ZEROBOUNCE_API_KEY", ""),
+        "GEMINI_API_KEY": "***" if os.getenv("GEMINI_API_KEY") else "",
+        "ZEROBOUNCE_API_KEY": "***" if os.getenv("ZEROBOUNCE_API_KEY") else "",
+        "AI_CUSTOM_PROMPT": os.getenv("AI_CUSTOM_PROMPT", ""),
     })
 
 

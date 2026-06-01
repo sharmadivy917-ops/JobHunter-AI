@@ -4,6 +4,7 @@ Ported from the mature root email_sender.py with full template and MX verificati
 ENHANCED: Comprehensive role-specific body content and personalization.
 """
 import smtplib
+import mimetypes
 import csv
 import json
 import os
@@ -11,14 +12,18 @@ import sys
 import io
 import time
 import random
-import dns.resolver
+import email.utils
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from dotenv import load_dotenv
-import email.utils
+from urllib.parse import urlparse
+from core.email_validator import verify_mx, verify_smtp_mailbox, is_generic_email
+
+# Email validation patterns
+bad_prefixes = {'abuse', 'jobseeker', 'support', 'admin', 'noreply', 'hello', 'team', 'info', 'contact', 'sales'}
 
 # Fix Windows console encoding
 if sys.stdout.encoding != 'utf-8':
@@ -38,8 +43,12 @@ FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 EMAIL_LOG = os.path.join(BASE_DIR, "email_log.json")
 BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
+RESUME_PATH = ""
 
 load_dotenv(ENV_FILE)
+
+# Cache for MX lookups
+_mx_cache = {}
 
 
 def get_config():
@@ -55,7 +64,7 @@ def get_config():
         "resume": os.getenv("RESUME_PATH", ""),
         "phone": os.getenv("PHONE", ""),
         "delay_min": int(os.environ.get("SEND_DELAY", os.getenv("SEND_DELAY", "15"))),
-        "delay_max": int(os.environ.get("SEND_DELAY", os.getenv("SEND_DELAY", "15"))) + 30,
+
         "max_sends": int(os.environ.get("SEND_MAX", os.getenv("MAX_DAY", "30"))),
     }
 
@@ -158,51 +167,6 @@ def save_bounced_domain(domain):
             json.dump(list(bounced), f, indent=2)
     except:
         pass
-
-
-def verify_mx(domain):
-    """Check if a domain can receive email (MX or A record fallback)."""
-    if not domain or len(domain) < 3:
-        return False
-    # Try MX records first
-    try:
-        records = dns.resolver.resolve(domain, 'MX', lifetime=5)
-        if len(records) > 0:
-            return True
-    except:
-        pass
-    # Fallback: check A record (many small companies accept email via A record)
-    try:
-        records = dns.resolver.resolve(domain, 'A', lifetime=5)
-        if len(records) > 0:
-            return True
-    except:
-        pass
-    return False
-
-
-def verify_smtp_mailbox(target_email, from_email):
-    """Deep SMTP Ping to verify mailbox existence."""
-    domain = target_email.split('@')[-1]
-    mx_record = None
-    try:
-        records = dns.resolver.resolve(domain, 'MX', lifetime=5)
-        mx_record = sorted(records, key=lambda rec: rec.preference)[0].exchange.to_text()
-    except Exception:
-        mx_record = domain
-        
-    try:
-        server = smtplib.SMTP(timeout=10)
-        server.connect(mx_record, 25)
-        server.helo(from_email.split('@')[-1] if '@' in from_email else 'localhost')
-        server.mail(from_email)
-        code, message = server.rcpt(target_email)
-        server.quit()
-        if code == 550:
-            return False
-        return True
-    except Exception:
-        return True
 
 
 def _get_role_context(role: str, cfg: dict, lead_type: str = "job") -> dict:
@@ -393,13 +357,11 @@ def _get_role_context(role: str, cfg: dict, lead_type: str = "job") -> dict:
     return COPY.get(category, COPY["general"])
 
 
-def get_email_html(cfg, company, role, hr_name, notes="", lead_type="job"): 
-    ps_pool = PS_LINES.get(lead_type, PS_LINES["job"])
-    ps_text = random.choice(ps_pool).format(phone=cfg.get("phone", ""))
+def get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes="", lead_type="job"): 
+    """Generate the rich HTML email body with comprehensive role-specific content."""
     notes_line = ""
     if notes and len(notes) > 5:
         notes_line = f'<p style="margin-bottom:16px;font-size:15px;line-height:1.8;color:#1A56A0;"><em>I have been following {company}\'s work and am particularly drawn to your focus area, which aligns well with my professional interests.</em></p>'
-    """Generate the rich HTML email body with comprehensive role-specific content."""
     portfolio_btn = ""
     if cfg["portfolio"]:
         portfolio_btn = f'<a href="{cfg["portfolio"]}" target="_blank" style="display:inline-block;background:#1A56A0;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;margin-right:10px;">Portfolio</a>'
@@ -408,7 +370,6 @@ def get_email_html(cfg, company, role, hr_name, notes="", lead_type="job"):
     if cfg["linkedin"]:
         linkedin_btn = f'<a href="{cfg["linkedin"]}" target="_blank" style="display:inline-block;background:#0077B5;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">LinkedIn Profile</a>'
 
-    ctx = _get_role_context(role, cfg, lead_type=lead_type)
     intro = ctx["intro"]
     body = ctx["body"]
     bullets = "".join(f"<li style='margin-bottom:8px;color:#333;'>{h}</li>" for h in ctx["highlights"])
@@ -471,13 +432,10 @@ def get_email_html(cfg, company, role, hr_name, notes="", lead_type="job"):
     """
 
 
-def get_email_plain(cfg, company, role, hr_name, notes="", lead_type="job"): 
-    ps_pool = PS_LINES.get(lead_type, PS_LINES["job"])
-    ps_text = random.choice(ps_pool).format(phone=cfg.get("phone", ""))
-    notes_line = f"I have been following {company}'s work..." if notes and len(notes) > 5 else ""
+def get_email_plain(cfg, company, role, hr_name, ctx, ps_text, notes="", lead_type="job"): 
     """Plain text fallback with full personalization."""
+    notes_line = f"I have been following {company}'s work..." if notes and len(notes) > 5 else ""
     import re
-    ctx = _get_role_context(role, cfg, lead_type=lead_type)
     intro = re.sub(r"<[^>]+>", "", ctx["intro"])
     body = re.sub(r"<[^>]+>", "", ctx["body"])
     bullets = "\n".join(f"  • {re.sub(r'<[^>]+>', '', h)}" for h in ctx["highlights"])
@@ -519,11 +477,16 @@ def attach_resume(msg, resume_path):
         return
     try:
         filename = os.path.basename(resume_path)
+        mime_type, _ = mimetypes.guess_type(resume_path)
+        if mime_type is None:
+            mime_type = 'application/octet-stream'
+        maintype, subtype = mime_type.split('/')
         with open(resume_path, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
+            part = MIMEBase(maintype, subtype)
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={filename}")
+        # Use proper RFC 2183 header to prevent issues with filenames containing spaces/parentheses
+        part.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(part)
     except Exception as e:
         print(f"   Could not attach resume: {e}")
@@ -613,11 +576,21 @@ def send_emails():
             print(f"   Skipping {to_email} due to poison pill domain ({domain}).")
             continue
 
-        # Role-Based Filter
-        prefix = to_email.split('@')[0].lower()
-        bad_prefixes = {'info', 'admin', 'support', 'contact', 'sales', 'hello', 'team'}
-        if prefix in bad_prefixes:
-            print(f"   Skipping {to_email} due to generic role prefix ({prefix}).")
+        # Role-Based Filter + Bad Prefix Check
+        if is_generic_email(to_email):
+            print(f"   Skipping {to_email} due to generic role prefix.")
+            log.append({
+                "company": company, "email": to_email,
+                "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "failed"
+            })
+            save_email_log(log)
+            continue
+        
+        # Check for bad prefixes
+        prefix = to_email.split('@')[0].split('+')[0].lower()
+        if any(prefix == bp or prefix.startswith(bp + '.') or prefix.startswith(bp + '_') for bp in bad_prefixes):
+            print(f"   Skipping {to_email} due to bad prefix ({prefix}).")
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -662,27 +635,37 @@ def send_emails():
                     msg["Reply-To"] = cfg['email']
                     msg["Date"] = email.utils.formatdate(localtime=True)
                     msg["Message-ID"] = email.utils.make_msgid(domain=cfg['email'].split('@')[1])
+                    msg['List-Unsubscribe'] = f'<mailto:{cfg["email"]}?subject=unsubscribe>'
 
-                    alt_part = MIMEMultipart("alternative")
                     notes = firm.get("notes", "")
                     lead_type = firm.get("type", "job")
                     
-                    plain_body = get_email_plain(cfg, company, role, hr_name, notes, lead_type=lead_type)
-                    html_body = get_email_html(cfg, company, role, hr_name, notes, lead_type=lead_type)
+                    ctx = _get_role_context(role, cfg, lead_type=lead_type)
                     
                     if os.getenv("GEMINI_API_KEY"):
                         try:
-                            from ai_engine import generate_custom_email
+                            from core.ai_engine import generate_custom_email
                             print(f"   [AI] Generating personalized email for {company}...")
-                            new_plain = generate_custom_email(company, role, cfg.get("skills", ""), plain_body)
-                            if new_plain != plain_body:
-                                plain_body = new_plain
-                                html_body = f'<div style="font-family: sans-serif; line-height: 1.6;">{plain_body.replace(chr(10), "<br>")}</div>'
+                            new_body = generate_custom_email(company, role, cfg.get("skills", ""), ctx["body"])
+                            if new_body and new_body != ctx["body"]:
+                                # Keep new_body as plain text - HTML template will handle conversion
+                                ctx["body"] = new_body
                         except ImportError:
                             pass
 
-                    alt_part.attach(MIMEText(plain_body, "plain"))
-                    alt_part.attach(MIMEText(html_body, "html"))
+                    # Choose P.S. text once - use for both plain and HTML
+                    ps_pool = PS_LINES.get(lead_type, PS_LINES["job"])
+                    ps_text = random.choice(ps_pool).format(phone=cfg.get("phone", ""))
+                    
+                    plain_body = get_email_plain(cfg, company, role, hr_name, ctx, ps_text, notes, lead_type=lead_type)
+                    html_body = get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes, lead_type=lead_type)
+                    
+                    # Create multipart alternative - client chooses HTML or plain text
+                    alt_part = MIMEMultipart("alternative")
+                    # Attach plain text first (lower priority)
+                    alt_part.attach(MIMEText(plain_body, "plain", "utf-8"))
+                    # Attach HTML second (higher priority - will be shown by default)
+                    alt_part.attach(MIMEText(html_body, "html", "utf-8"))
                     msg.attach(alt_part)
 
                     attach_resume(msg, cfg["resume"])
@@ -691,13 +674,46 @@ def send_emails():
                     break
                 except smtplib.SMTPServerDisconnected:
                     try:
-                        server.connect("smtp.gmail.com", 465)
-                        server.login(cfg["email"], cfg["password"])
-                    except: pass
+                        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+                        server.login(cfg['email'], cfg['password'])
+                        print(f"   ⚠️ Reconnected to SMTP server...")
+                    except Exception as e:
+                        raise Exception(f"Lost connection and reconnect failed: {e}")
+                except smtplib.SMTPRecipientsRefused:
+                    print(f"   🚫 SMTP recipients refused for {to_email}.")
+                    save_bounced_domain(domain)
+                    bounced_set.add(domain)
+                    log.append({
+                        "company": company, "email": to_email,
+                        "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "status": "bounced"
+                    })
+                    break
+                except smtplib.SMTPException as e:
+                    # Only blacklist on permanent errors (SMTP 5xx), not transient errors
+                    error_msg = str(e).lower()
+                    if '550' in error_msg or 'permanently' in error_msg:
+                        # Permanent error - blacklist domain
+                        print(f"   🚫 Permanent SMTP error: {e}")
+                        save_bounced_domain(domain)
+                        bounced_set.add(domain)
+                        log.append({
+                            "company": company, "email": to_email,
+                            "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "status": "bounced"
+                        })
+                        break
+                    elif attempt < 2:
+                        # Transient error - retry
+                        wait = (attempt + 1) * 5
+                        print(f"   ⚠️ Transient error ({type(e).__name__}), retrying in {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        raise e
                 except Exception as e:
                     if attempt < 2:
                         wait = (attempt + 1) * 5
-                        print(f"   ⚠️ Attempt {attempt+1} failed, retrying in {wait}s...")
+                        print(f"   ⚠️ Attempt {attempt+1} failed ({type(e).__name__}), retrying in {wait}s...")
                         time.sleep(wait)
                     else:
                         raise e
@@ -706,12 +722,12 @@ def send_emails():
 
             log.append({
                 "company": company, "email": to_email,
-                "role": role, "type": firm.get("type", "job"), "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "role": role, "type": firm.get("type", "job"), "hr_name": hr_name, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "sent"
             })
             save_email_log(log)
 
-            # Random delay
+            # Random delay between sends
             if i < len(to_send):
                 base_delay = cfg["delay_min"]
                 delay = random.uniform(base_delay, base_delay * 1.5) + random.uniform(5, 15)
@@ -720,14 +736,26 @@ def send_emails():
 
         except Exception as e:
             print(f"   Failed: {e}")
-            save_bounced_domain(domain)
-            bounced_set.add(domain)
+            # Only blacklist if it's clearly a permanent domain error
+            error_msg = str(e).lower()
+            if 'domain' in error_msg or 'mx' in error_msg or '550' in error_msg:
+                save_bounced_domain(domain)
+                bounced_set.add(domain)
+                status = "bounced"
+            else:
+                status = "failed"
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "failed"
+                "status": status
             })
+            
+        # Batch save every 5 emails to avoid writing 60KB constantly
+        if (sent_count % 5 == 0) or (i == len(to_send)):
             save_email_log(log)
+
+    # Final save
+    save_email_log(log)
 
     try:
         server.quit()

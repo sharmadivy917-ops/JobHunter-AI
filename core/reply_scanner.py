@@ -170,7 +170,19 @@ def scan_for_replies():
                                     from_email = from_email.lower().strip()
                                     
                                     # Check it's not a bounce or auto-reply system
-                                    if any(skip in from_email for skip in ['mailer-daemon', 'postmaster', 'noreply', 'no-reply', 'donotreply']):
+                                    if any(skip in from_email for skip in ['mailer-daemon', 'postmaster', 'noreply', 'no-reply', 'donotreply', 'newsletter', 'marketing']):
+                                        continue
+                                        
+                                    # Stricter detection: Must be an actual reply or mention keywords
+                                    subject_lower = subject.lower()
+                                    is_reply = (
+                                        "re:" in subject_lower or 
+                                        msg.get('In-Reply-To') or 
+                                        msg.get('References') or
+                                        any(kw in subject_lower for kw in ['interview', 'application', 'candidate', 'resume', 'divy', 'sharma', 'offer', 'assessment'])
+                                    )
+                                    
+                                    if not is_reply:
                                         continue
                                     
                                     for comp in companies:

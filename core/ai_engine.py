@@ -24,10 +24,13 @@ def generate_custom_email(company_name, role, user_skills, base_template):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         
+        custom_instructions = os.getenv("AI_CUSTOM_PROMPT", "")
+        instruction_text = f"\nUser Custom Instructions:\n{custom_instructions}\n" if custom_instructions else ""
+
         prompt = f"""
 You are an expert job application email writer. I have a base template and some details.
 Please rewrite the base template to make it highly personalized for the specific company and role, highlighting my skills appropriately. Keep it concise, professional, and matching the original tone. Do NOT add placeholder brackets like [Your Name]. Ensure that the output string matches the overall structure of the base template.
-
+{instruction_text}
 Details:
 Company: {company_name}
 Role: {role}
@@ -38,10 +41,20 @@ Base Template:
 
 Return ONLY the text of the custom email. Do not add conversational filler.
 """
-        response = model.generate_content(prompt)
-        if response and response.text:
-            return response.text.strip()
-    except Exception as e:
-        print(f"   [AI Engine] Failed to generate custom email: {e}")
+        import time
+        for attempt in range(3):
+            try:
+                response = model.generate_content(prompt)
+                if response and response.text:
+                    return response.text.strip()
+                break
+            except Exception as e:
+                if attempt < 2:
+                    wait_time = (attempt + 1) * 3
+                    print(f"   [AI Engine] API failed ({type(e).__name__}), retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"   [AI Engine] Failed to generate custom email: {e}")
+
     
     return base_template

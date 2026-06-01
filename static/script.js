@@ -25,8 +25,20 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.addEventListener('click', () => {
       switchTab(el.dataset.tab);
+      // Close mobile menu if open
+      if(window.innerWidth <= 640) {
+        document.querySelector('.sidebar').classList.remove('open');
+      }
     });
   });
+
+  // ── MOBILE MENU ────────────────────────────
+  const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+  if (mobileMenuBtn) {
+    mobileMenuBtn.addEventListener('click', () => {
+      document.querySelector('.sidebar').classList.toggle('open');
+    });
+  }
 
   // ── CLOCK ──────────────────────────────────
   setInterval(() => {
@@ -85,6 +97,9 @@ document.addEventListener('DOMContentLoaded', () => {
   async function apiGet(url) {
     try {
       const r = await fetch(url);
+      if (!r.ok) {
+        return {error: `HTTP ${r.status} ${r.statusText}`};
+      }
       return await r.json();
     } catch(e) {
       return {error: e.message};
@@ -163,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(_) {}
   }
 
-  setInterval(fetchStatus, 800);
+  setInterval(fetchStatus, 2500);
 
   // ── QUICK ACTIONS ──────────────────────────
   document.getElementById('qa-hunt').onclick = () => switchTab('hunter');
@@ -205,8 +220,37 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ── SENDER ─────────────────────────────────
   document.getElementById('start-send-btn').addEventListener('click', startSender);
+
+  document.getElementById('preview-email-btn').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const modal = document.getElementById('preview-modal');
+    const container = document.getElementById('preview-container');
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Generating preview...</div>';
+    modal.classList.add('show');
+    
+    const res = await apiGet('/api/preview_email');
+    if (res.html) {
+      // Use shadow DOM to isolate styles, or iframe. iframe is safer.
+      container.innerHTML = `<iframe style="width:100%;height:100%;border:none;" srcdoc="${escapeHtmlAttr(res.html)}"></iframe>`;
+    } else {
+      container.innerHTML = `<div style="padding:40px;color:var(--danger)">Error: ${res.error || 'Unknown error'}</div>`;
+    }
+  });
+
+  document.getElementById('btn-close-preview').addEventListener('click', () => {
+    document.getElementById('preview-modal').classList.remove('show');
+  });
+
+  // Helper for srcdoc
+  function escapeHtmlAttr(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
 
   async function startSender() {
     toast('Sender started...', 'info');
@@ -287,6 +331,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (d.error) { toast('Failed to load leads', 'err'); return; }
     allLeads = d.leads || [];
     renderLeads('', '', '', '');
+    renderPipeline();
     document.getElementById('leads-search').value = '';
     document.getElementById('leads-size-filter').value = '';
     document.getElementById('leads-type-filter').value = '';
@@ -361,7 +406,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Bind replied buttons
     tbody.querySelectorAll('.replied-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
-        markReplied(this.dataset.email);
+        if (!confirm('Mark as replied? This will stop all follow-ups.')) return;
+        updateStatus(this.dataset.email, 'replied');
       });
     });
   }
@@ -407,14 +453,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function markReplied(email) {
-    if (!confirm('Mark ' + email + ' as replied? This will stop all follow-ups for this company.')) return;
-    const res = await apiPost('/api/leads/' + encodeURIComponent(email) + '/replied');
+  async function updateStatus(email, status) {
+    const res = await apiPost('/api/leads/' + encodeURIComponent(email) + '/status', { status });
     if (res.ok) {
-      toast(email + ' marked as replied', 'ok');
+      toast(email + ' marked as ' + status, 'ok');
       refreshLeads();
     } else {
-      toast('Failed to mark replied', 'err');
+      toast('Failed to update status', 'err');
     }
   }
 
@@ -484,10 +529,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       tr.innerHTML = `
         <td>${d.history.length - i}</td>
-        <td class="primary-text">${h.company || '-'}</td>
-        <td style="font-family:monospace">${h.email || '-'}</td>
-        <td style="color:var(--text-dim)">${h.sent_at || '-'}</td>
-        <td>${h.follow_up_stage ? `Stage ${h.follow_up_stage}` : '-'}</td>
+        <td class="primary-text">${escapeHtml(h.company || '-')}</td>
+        <td style="font-family:monospace">${escapeHtml(h.email || '-')}</td>
+        <td style="color:var(--text-dim)">${escapeHtml(h.sent_at || '-')}</td>
+        <td>${escapeHtml(h.follow_up_stage ? `Stage ${h.follow_up_stage}` : '-')}</td>
         <td>${badge}</td>
       `;
       tbody.appendChild(tr);
@@ -563,6 +608,9 @@ document.addEventListener('DOMContentLoaded', () => {
       LOCATIONS:     document.getElementById('cfg-locations').value,
       SEND_DELAY:    document.getElementById('cfg-senddelay').value,
       MAX_DAY:       document.getElementById('cfg-maxday').value,
+      GEMINI_API_KEY: document.getElementById('cfg-gemini-key') ? document.getElementById('cfg-gemini-key').value : '',
+      ZEROBOUNCE_API_KEY: document.getElementById('cfg-zerobounce-key') ? document.getElementById('cfg-zerobounce-key').value : '',
+      AI_CUSTOM_PROMPT: document.getElementById('cfg-ai-prompt') ? document.getElementById('cfg-ai-prompt').value : ''
     };
     const res = await apiPost('/api/settings', cfg);
     if (res.ok) toast('Settings saved to .env', 'ok');
@@ -585,6 +633,9 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cfg-locations').value = d.LOCATIONS || '';
     document.getElementById('cfg-senddelay').value = d.SEND_DELAY || '10';
     document.getElementById('cfg-maxday').value    = d.MAX_DAY || '50';
+    if(document.getElementById('cfg-gemini-key')) document.getElementById('cfg-gemini-key').value = d.GEMINI_API_KEY || '';
+    if(document.getElementById('cfg-zerobounce-key')) document.getElementById('cfg-zerobounce-key').value = d.ZEROBOUNCE_API_KEY || '';
+    if(document.getElementById('cfg-ai-prompt')) document.getElementById('cfg-ai-prompt').value = d.AI_CUSTOM_PROMPT || '';
 
     // Also populate hunter defaults
     if (d.ROLES) document.getElementById('h-roles').value = d.ROLES;
@@ -692,11 +743,32 @@ document.addEventListener('DOMContentLoaded', () => {
       if(!el) continue;
       const dz = el.querySelector('.kanban-dropzone');
       dz.innerHTML = '';
+      dz.dataset.status = colId.replace('kb-', '');
+      
+      dz.addEventListener('dragover', e => {
+        e.preventDefault();
+        dz.style.background = 'var(--surface)';
+      });
+      dz.addEventListener('dragleave', e => {
+        dz.style.background = '';
+      });
+      dz.addEventListener('drop', e => {
+        e.preventDefault();
+        dz.style.background = '';
+        const email = e.dataTransfer.getData('text/plain');
+        if (email) {
+          updateStatus(email, dz.dataset.status);
+        }
+      });
+
       items.forEach(l => {
         const div = document.createElement('div');
         div.className = 'kanban-card';
         div.draggable = true;
-        div.innerHTML = `<h4>${l.company}</h4><p>${l.role}</p>`;
+        div.addEventListener('dragstart', e => {
+          e.dataTransfer.setData('text/plain', l.email);
+        });
+        div.innerHTML = `<h4>${escapeHtml(l.company)}</h4><p>${escapeHtml(l.role)}</p>`;
         dz.appendChild(div);
       });
     }

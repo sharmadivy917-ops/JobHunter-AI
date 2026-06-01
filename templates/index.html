@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=2" />
 </head>
 <body>
 <div class="toast-container" id="toast-container"></div>
@@ -89,7 +89,12 @@
   <!-- ── MAIN ── -->
   <div class="main">
     <div class="topbar">
-      <div class="topbar-title" id="topbar-title">Dashboard</div>
+      <div class="topbar-left">
+        <button id="mobile-menu-btn" class="mobile-only">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
+        <div class="topbar-title" id="topbar-title">Dashboard</div>
+      </div>
       <div class="topbar-meta">
         <span class="chip live" id="live-chip">&#9679; LIVE</span>
         <span class="chip" id="time-chip">--:--:--</span>
@@ -241,9 +246,13 @@
             </div>
           </div>
           <div class="btn-row">
-            <button class="btn primary" id="start-send-btn">
+            <button type="button" class="btn primary" id="start-send-btn">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-              Send Emails
+              Start Sending
+            </button>
+            <button type="button" class="btn secondary" id="preview-email-btn" style="margin-left:8px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              Preview Email
             </button>
           </div>
         </div>
@@ -496,6 +505,14 @@
             </div>
           </div>
 
+          <div class="settings-section" style="margin-top:24px">Email Customization</div>
+          <div class="form-grid" style="grid-template-columns: 1fr;">
+            <div class="field-group">
+              <label class="field-label">AI Custom Prompt (Template Editor)</label>
+              <textarea class="field-input" id="cfg-ai-prompt" rows="3" placeholder="E.g., Always sound enthusiastic, use short sentences, and mention my love for hackathons."></textarea>
+            </div>
+          </div>
+
           <div class="settings-section" style="margin-top:24px">Gmail Config</div>
           <div class="btn-row" style="margin-top:8px">
             <button class="btn primary" id="save-settings-btn">Save to .env</button>
@@ -508,6 +525,32 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='script.js') }}"></script>
+    <!-- Delete Modal -->
+    <div id="delete-modal" class="modal">
+      <div class="modal-content">
+        <h3 style="margin-bottom:8px">Delete Lead?</h3>
+        <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">This will remove the lead from your CSV. This cannot be undone.</p>
+        <div class="btn-row" style="justify-content:flex-end">
+          <button class="btn secondary" id="btn-cancel-delete">Cancel</button>
+          <button class="btn delete" id="btn-confirm-delete">Delete</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Email Preview Modal -->
+    <div id="preview-modal" class="modal">
+      <div class="modal-content" style="max-width:750px;width:90%">
+        <h3 style="margin-bottom:8px">Email Preview</h3>
+        <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">This is a live preview of how the email will render using your current settings.</p>
+        <div id="preview-container" style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:16px;height:500px;overflow-y:auto;margin-bottom:16px;">
+          <!-- Preview content injected here -->
+        </div>
+        <div class="btn-row" style="justify-content:flex-end">
+          <button class="btn secondary" id="btn-close-preview">Close Preview</button>
+        </div>
+      </div>
+    </div>
+
+<script src="{{ url_for('static', filename='script.js') }}?v=2"></script>
 </body>
 </html>

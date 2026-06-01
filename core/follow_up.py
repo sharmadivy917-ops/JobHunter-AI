@@ -10,19 +10,16 @@ from datetime import datetime, timedelta
 import random
 import sys
 import io
-
-# Fix Windows console encoding for emoji support
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
-
-import sys
-import io
-import json
-import random
+import email.utils
 from dotenv import load_dotenv
+from core.email_validator import verify_mx, verify_smtp_mailbox, is_generic_email
 
+# DNS resolver with fallback
+try:
+    import dns.resolver
+    HAS_DNS_RESOLVER = True
+except ImportError:
+    HAS_DNS_RESOLVER = False
 if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
@@ -62,6 +59,15 @@ def load_bounced_domains():
                 return set(json.load(f))
         except: pass
     return set()
+
+def save_bounced_domain(domain):
+    if not domain: return
+    b = load_bounced_domains()
+    b.add(domain)
+    try:
+        with open(BOUNCED_JSON, 'w') as f:
+            json.dump(list(b), f, indent=2)
+    except: pass
 
 def get_imap_connection():
     try:
@@ -327,33 +333,37 @@ STAGE_LABELS = {
     3: "Stage 3 — Final follow-up",
 }
 
-# Map stage → (html_fn, plain_fn)
-STAGE_TEMPLATES = {
-    1: (get_stage1_html, get_stage1_plain),
-    2: (get_stage2_html, get_stage2_plain),
-    3: (get_stage3_html, get_stage3_plain),
-}
+# Note: STAGE_SUBJECTS and STAGE_TEMPLATES are defined but templates are called directly in code.
+# These definitions are kept for reference but not used by send_follow_up().
+# Map stage → (html_fn, plain_fn) - NOT USED (subject lines built manually)
+# STAGE_TEMPLATES = {
+#     1: (get_stage1_html, get_stage1_plain),
+#     2: (get_stage2_html, get_stage2_plain),
+#     3: (get_stage3_html, get_stage3_plain),
+# }
 
 
-def send_follow_up(entry, stage, dry_run=False):
-    company_name = entry.get("company", "your company")
-    role = entry.get("role", "Software Developer")
-    hr_name = entry.get("hr_name", "Hiring Manager")
-    target_email = entry.get("email")
-    lead_type = entry.get("type", "job")
-
-    if not target_email:
+def send_follow_up(target_email, company_name, role, hr_name, stage, lead_type="job", dry_run=False, smtp_conn=None):
+    if stage == 1:
+        subject = f"Quick Check-in: {role} Application — {YOUR_NAME}"
+        plain_fn, html_fn = get_stage1_plain, get_stage1_html
+    elif stage == 2:
+        subject = f"Following Up: {role} at {company_name} — {YOUR_NAME}"
+        plain_fn, html_fn = get_stage2_plain, get_stage2_html
+    elif stage == 3:
+        subject = f"Still Interested: {role} Position — {YOUR_NAME}"
+        plain_fn, html_fn = get_stage3_plain, get_stage3_html
+    else:
         return False
-
-    subjects = STAGE_SUBJECTS.get(lead_type, STAGE_SUBJECTS["job"])
-    subject = subjects[stage].format(role=role, company=company_name, name=YOUR_NAME)
-
-    html_fn, plain_fn = STAGE_TEMPLATES[stage]
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"{YOUR_NAME} <{YOUR_EMAIL}>"
     msg["To"] = target_email
+    msg["Reply-To"] = YOUR_EMAIL
+    msg["Date"] = email.utils.formatdate(localtime=True)
+    msg["Message-ID"] = email.utils.make_msgid(domain=YOUR_EMAIL.split('@')[1]) if '@' in YOUR_EMAIL else email.utils.make_msgid()
+    msg['List-Unsubscribe'] = f'<mailto:{YOUR_EMAIL}?subject=unsubscribe>'
 
     msg.attach(MIMEText(plain_fn(company_name, role, hr_name), "plain"))
     msg.attach(MIMEText(html_fn(company_name, role, hr_name), "html"))
@@ -368,10 +378,12 @@ def send_follow_up(entry, stage, dry_run=False):
         return True
 
     try:
-        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT)
-        server.login(YOUR_EMAIL, YOUR_PASSWORD)
-        server.send_message(msg)
-        server.quit()
+        if smtp_conn:
+            smtp_conn.send_message(msg)
+        else:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+                server.login(YOUR_EMAIL, YOUR_PASSWORD)
+                server.send_message(msg)
         return True
     except Exception as e:
         print(f"   ❌ Failed to send follow-up to {company_name}: {e}")
@@ -384,12 +396,6 @@ def main():
     parser.add_argument("--days", type=int, default=5, help="Minimum days before Stage 1 follow-up (default: 5)")
     parser.add_argument("--auto", action="store_true", help="Run automatically without asking for confirmation")
     args = parser.parse_args()
-
-    if mail:
-        try:
-            mail.close()
-            mail.logout()
-        except: pass
 
     print(f"\n========================================================")
     print(f"  📬  FOLLOW-UP AUTOMATION — {YOUR_NAME}")
@@ -455,8 +461,18 @@ def main():
     elif args.auto and not args.dry_run:
         print("🤖 AUTO MODE ENABLED: Skipping confirmation prompt.\n")
 
-        bounced = load_bounced_domains()
+    bounced = load_bounced_domains()
     mail = get_imap_connection()
+    
+    smtp_conn = None
+    if not args.dry_run:
+        try:
+            smtp_conn = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT)
+            smtp_conn.login(YOUR_EMAIL, YOUR_PASSWORD)
+            print("📡 SMTP connection established")
+        except Exception as e:
+            print(f"❌ SMTP connection failed: {e}")
+            sys.exit(1)
     if mail:
         print(f"🔍 Connected to inbox for reply detection.")
     
@@ -464,6 +480,9 @@ def main():
     for idx, (log_idx, entry, stage) in enumerate(targets):
         company = entry.get("company", "Unknown")
         email = entry.get("email")
+        role = entry.get("role", "Software Developer")
+        hr_name = entry.get("hr_name", "Hiring Manager")
+        lead_type = entry.get("type", "job")
         
         print(f"[{idx+1}/{len(targets)}] 📨 Following up with {company} ({email}) — {STAGE_LABELS[stage]}")
         
@@ -476,6 +495,34 @@ def main():
                 save_email_log(log)
             continue
             
+        # Generic check
+        if is_generic_email(email):
+            print(f"   ⚠️ Skipping generic email: {email}")
+            if not args.dry_run:
+                log[log_idx]["status"] = "failed"
+                save_email_log(log)
+            continue
+            
+        # MX Verification
+        if not verify_mx(domain):
+            print(f"   🚫 MX verification failed for {domain}. Skipping.")
+            save_bounced_domain(domain)
+            bounced.add(domain)
+            if not args.dry_run:
+                log[log_idx]["status"] = "bounced"
+                save_email_log(log)
+            continue
+            
+        # SMTP Deep ping
+        if not verify_smtp_mailbox(email, YOUR_EMAIL):
+            print(f"   🚫 SMTP mailbox verification failed for {email}. Skipping.")
+            save_bounced_domain(domain)
+            bounced.add(domain)
+            if not args.dry_run:
+                log[log_idx]["status"] = "bounced"
+                save_email_log(log)
+            continue
+            
         if mail and check_if_replied(mail, email):
             print(f"   🎉 SUCCESS: They already replied! Cancelling all follow-ups.")
             if not args.dry_run:
@@ -483,7 +530,11 @@ def main():
                 save_email_log(log)
             continue
 
-        if send_follow_up(entry, stage, dry_run=args.dry_run):
+        success = send_follow_up(
+            email, company, role, hr_name, stage, 
+            lead_type=lead_type, dry_run=args.dry_run, smtp_conn=smtp_conn
+        )
+        if success:
             if not args.dry_run:
                 # Update log with stage tracking
                 log[log_idx]["follow_up_stage"] = stage
@@ -505,12 +556,17 @@ def main():
             mail.close()
             mail.logout()
         except: pass
+        
+    if smtp_conn:
+        try:
+            smtp_conn.quit()
+        except: pass
 
     print(f"\n========================================================")
     print(f"  📊  FOLLOW-UP SUMMARY")
     print(f"========================================================")
     if args.dry_run:
-        print(f"  👀 Previewed: {sent_count} follow-ups")
+        print(f"\n🎉 Finished! Previewed {sent_count} follow-ups.")
     else:
         print(f"  ✅ Sent:      {sent_count}")
         stage_counts = {}

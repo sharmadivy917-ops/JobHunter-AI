@@ -91,11 +91,15 @@ def clean_bounces():
                             bounced_emails.add(match.lower().strip())
 
             try:
+                # Move to Trash instead of permanently deleting
+                mail.copy(e_id, '[Gmail]/Trash')
                 mail.store(e_id, '+FLAGS', '\\Deleted')
             except:
                 pass
 
-        mail.expunge()
+        # Don't permanently delete - just mark for deletion without expunging
+        # This keeps emails in Trash where they can be recovered if needed
+        # mail.expunge()  # REMOVED: Don't permanently delete emails
         mail.close()
         mail.logout()
 
