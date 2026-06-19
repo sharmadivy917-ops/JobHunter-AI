@@ -13,6 +13,7 @@ import io
 import email.utils
 from dotenv import load_dotenv
 from core.email_validator import verify_mx, verify_smtp_mailbox, is_generic_email
+from core.suppression import is_suppressed
 
 # DNS resolver with fallback
 try:
@@ -309,38 +310,11 @@ Best regards,
 # ─────────────────────────────────────────────
 #  SUBJECT LINES PER STAGE
 # ─────────────────────────────────────────────
-STAGE_SUBJECTS = {
-    "job": {
-        1: "Quick Check-in: {role} Application — {name}",
-        2: "Following Up: {role} at {company} — {name}",
-        3: "Still Interested: {role} Position — {name}",
-    },
-    "internship": {
-        1: "Quick Check-in: {role} Internship — {name}",
-        2: "Following Up: {role} Internship at {company} — {name}",
-        3: "Still Interested: {role} Internship — {name}",
-    },
-    "trainee": {
-        1: "Quick Check-in: {role} Trainee Role — {name}",
-        2: "Following Up: {role} Trainee Role at {company} — {name}",
-        3: "Still Interested: {role} Trainee Role — {name}",
-    }
-}
-
 STAGE_LABELS = {
     1: "Stage 1 — Gentle check-in",
     2: "Stage 2 — Value-add follow-up",
     3: "Stage 3 — Final follow-up",
 }
-
-# Note: STAGE_SUBJECTS and STAGE_TEMPLATES are defined but templates are called directly in code.
-# These definitions are kept for reference but not used by send_follow_up().
-# Map stage → (html_fn, plain_fn) - NOT USED (subject lines built manually)
-# STAGE_TEMPLATES = {
-#     1: (get_stage1_html, get_stage1_plain),
-#     2: (get_stage2_html, get_stage2_plain),
-#     3: (get_stage3_html, get_stage3_plain),
-# }
 
 
 def send_follow_up(target_email, company_name, role, hr_name, stage, lead_type="job", dry_run=False, smtp_conn=None):
@@ -477,14 +451,20 @@ def main():
         print(f"🔍 Connected to inbox for reply detection.")
     
     sent_count = 0
+    _unsaved_changes = 0
     for idx, (log_idx, entry, stage) in enumerate(targets):
         company = entry.get("company", "Unknown")
-        email = entry.get("email")
+        entry_email = entry.get("email")
         role = entry.get("role", "Software Developer")
         hr_name = entry.get("hr_name", "Hiring Manager")
         lead_type = entry.get("type", "job")
         
         print(f"[{idx+1}/{len(targets)}] 📨 Following up with {company} ({email}) — {STAGE_LABELS[stage]}")
+        
+        # Suppression check
+        if is_suppressed(email):
+            print(f"   ⏭️ Skipping {email} (suppressed)")
+            continue
         
         domain = email.split('@')[1] if '@' in email else ""
         
@@ -492,7 +472,7 @@ def main():
             print(f"   🚫 Skipping: Domain/Email is on the bounce list.")
             if not args.dry_run:
                 log[log_idx]["status"] = "bounced"
-                save_email_log(log)
+                _unsaved_changes += 1
             continue
             
         # Generic check
@@ -500,7 +480,7 @@ def main():
             print(f"   ⚠️ Skipping generic email: {email}")
             if not args.dry_run:
                 log[log_idx]["status"] = "failed"
-                save_email_log(log)
+                _unsaved_changes += 1
             continue
             
         # MX Verification
@@ -510,7 +490,7 @@ def main():
             bounced.add(domain)
             if not args.dry_run:
                 log[log_idx]["status"] = "bounced"
-                save_email_log(log)
+                _unsaved_changes += 1
             continue
             
         # SMTP Deep ping
@@ -520,14 +500,14 @@ def main():
             bounced.add(domain)
             if not args.dry_run:
                 log[log_idx]["status"] = "bounced"
-                save_email_log(log)
+                _unsaved_changes += 1
             continue
             
         if mail and check_if_replied(mail, email):
             print(f"   🎉 SUCCESS: They already replied! Cancelling all follow-ups.")
             if not args.dry_run:
                 log[log_idx]["status"] = "replied"
-                save_email_log(log)
+                _unsaved_changes += 1
             continue
 
         success = send_follow_up(
@@ -539,9 +519,14 @@ def main():
                 # Update log with stage tracking
                 log[log_idx]["follow_up_stage"] = stage
                 log[log_idx][f"follow_up_{stage}_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                save_email_log(log)
+                _unsaved_changes += 1
                 print("   ✅ Sent successfully!")
                 sent_count += 1
+
+                # Batch save every 5 successful sends
+                if sent_count % 5 == 0:
+                    save_email_log(log)
+                    _unsaved_changes = 0
 
                 # Delay
                 if idx < len(targets) - 1:
@@ -551,16 +536,22 @@ def main():
             else:
                 sent_count += 1
 
+    # Final save for any unsaved changes
+    if _unsaved_changes > 0:
+        save_email_log(log)
+
     if mail:
         try:
             mail.close()
             mail.logout()
-        except: pass
+        except Exception:
+            pass
         
     if smtp_conn:
         try:
             smtp_conn.quit()
-        except: pass
+        except Exception:
+            pass
 
     print(f"\n========================================================")
     print(f"  📊  FOLLOW-UP SUMMARY")

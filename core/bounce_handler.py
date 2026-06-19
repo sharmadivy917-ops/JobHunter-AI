@@ -25,6 +25,9 @@ FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
 
+from filelock import FileLock
+file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
+
 load_dotenv(ENV_FILE)
 
 EMAIL_ACCOUNT = os.getenv("EMAIL")
@@ -78,12 +81,12 @@ def clean_bounces():
                             if part.get_content_type() in ["text/plain", "message/delivery-status"]:
                                 try:
                                     body += part.get_payload(decode=True).decode(errors='ignore')
-                                except:
+                                except Exception:
                                     pass
                     else:
                         try:
                             body = msg.get_payload(decode=True).decode(errors='ignore')
-                        except:
+                        except Exception:
                             pass
                     
                     for pat in bounce_patterns:
@@ -94,7 +97,7 @@ def clean_bounces():
                 # Move to Trash instead of permanently deleting
                 mail.copy(e_id, '[Gmail]/Trash')
                 mail.store(e_id, '+FLAGS', '\\Deleted')
-            except:
+            except Exception:
                 pass
 
         # Don't permanently delete - just mark for deletion without expunging
@@ -112,36 +115,47 @@ def clean_bounces():
         bounced_domains = set()
         if os.path.exists(BOUNCED_JSON):
             try:
-                with open(BOUNCED_JSON, 'r') as f:
-                    bounced_domains = set(json.load(f))
-            except:
+                with file_lock:
+                    with open(BOUNCED_JSON, 'r') as f:
+                        bounced_domains = set(json.load(f))
+            except Exception:
                 pass
         
         for em in bounced_emails:
             if '@' in em:
                 bounced_domains.add(em.split('@')[1])
-        
-        with open(BOUNCED_JSON, 'w') as f:
-            json.dump(list(bounced_domains), f, indent=2)
 
-        rows = []
-        removed_count = 0
-        if os.path.exists(FIRMS_CSV):
-            with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                fieldnames = reader.fieldnames
-                for row in reader:
-                    em = row['contact_email'].lower()
-                    domain = em.split('@')[1] if '@' in em else ''
-                    if em in bounced_emails or domain in bounced_domains:
-                        removed_count += 1
-                    else:
-                        rows.append(row)
-            
-            with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
+        # Permanently suppress confirmed-bounced addresses so they are never
+        # retried by a future hunt or send.
+        try:
+            from core.suppression import suppress_email
+            for em in bounced_emails:
+                suppress_email(em)
+        except Exception:
+            pass
+
+        with file_lock:
+            with open(BOUNCED_JSON, 'w') as f:
+                json.dump(list(bounced_domains), f, indent=2)
+
+            rows = []
+            removed_count = 0
+            if os.path.exists(FIRMS_CSV):
+                with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    fieldnames = reader.fieldnames
+                    for row in reader:
+                        em = row.get('contact_email', '').lower()
+                        domain = em.split('@')[1] if '@' in em else ''
+                        if em in bounced_emails or domain in bounced_domains:
+                            removed_count += 1
+                        else:
+                            rows.append(row)
+                
+                with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(rows)
 
         print(f"   ✅ Removed {removed_count} bounced companies from firms.csv!")
         print("🎉 Inbox cleaned up!")

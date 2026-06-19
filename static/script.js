@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── NAV TAB SWITCHING ──────────────────────
   const TAB_TITLES = {
     dashboard:'Dashboard', hunter:'Hunter', sender:'Sender',
-    leads:'Leads', followups:'Follow-ups', history:'History', pipeline:'Pipeline', analytics:'Analytics', ats:'ATS Optimizer', bounces:'Bounce Handler', settings:'Settings'
+    leads:'Leads', manual_jobs:'Manual Jobs', followups:'Follow-ups', history:'History', pipeline:'Pipeline', analytics:'Analytics', ats:'ATS Optimizer', bounces:'Bounce Handler', settings:'Settings'
   };
 
   function switchTab(tabId) {
@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('topbar-title').textContent = TAB_TITLES[tabId] || tabId;
     
     if (tabId === 'leads') refreshLeads();
+    if (tabId === 'manual_jobs') refreshManualJobs();
     if (tabId === 'settings') loadSettings();
     if (tabId === 'history') refreshHistory();
     if (tabId === 'analytics') renderAnalytics();
@@ -88,6 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify(payload || {})
       });
+      if (!r.ok) return {error: 'HTTP ' + r.status};
       return await r.json();
     } catch(e) {
       return {error: e.message};
@@ -109,6 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function apiDelete(url) {
     try {
       const r = await fetch(url, {method: 'DELETE'});
+      if (!r.ok) return {error: 'HTTP ' + r.status};
       return await r.json();
     } catch(e) {
       return {error: e.message};
@@ -206,14 +209,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetType = document.getElementById('h-target-type').value;
     toast('Hunter started...', 'info');
     appendLog('hunter-log', 'Hunting: ' + roles + ' | Exp: ' + experience + ' | Size: ' + companySize + ' | Type: ' + targetType, 'info');
+    const useAi = document.getElementById('h-use-ai') ? document.getElementById('h-use-ai').checked : false;
     const res = await apiPost('/api/run/hunt', {
       roles: roles,
       locations: locations,
       experience: experience,
       company_size: companySize,
       target_type: targetType,
+      source: document.getElementById('h-source') ? document.getElementById('h-source').value : 'google',
       max: parseInt(document.getElementById('h-max').value) || 20,
       delay: parseInt(document.getElementById('h-delay').value) || 5,
+      use_ai: useAi,
     });
     if (res.error) {
       toast('Hunter error: ' + res.error, 'err');
@@ -232,7 +238,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await apiGet('/api/preview_email');
     if (res.html) {
       // Use shadow DOM to isolate styles, or iframe. iframe is safer.
-      container.innerHTML = `<iframe style="width:100%;height:100%;border:none;" srcdoc="${escapeHtmlAttr(res.html)}"></iframe>`;
+      container.innerHTML = `<iframe style="width:100%;height:100%;border:none;" srcdoc="${escapeForSrcdoc(res.html)}"></iframe>`;
     } else {
       container.innerHTML = `<div style="padding:40px;color:var(--danger)">Error: ${res.error || 'Unknown error'}</div>`;
     }
@@ -243,6 +249,11 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Helper for srcdoc
+  function escapeForSrcdoc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;');
+  }
   function escapeHtmlAttr(str) {
     return str
       .replace(/&/g, '&amp;')
@@ -258,6 +269,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await apiPost('/api/run/send', {
       delay: parseInt(document.getElementById('s-delay').value) || 10,
       max: parseInt(document.getElementById('s-max').value) || 30,
+      use_ai: document.getElementById('s-use-ai') ? document.getElementById('s-use-ai').checked : true
     });
     if (res.error) {
       toast('Sender error: ' + res.error, 'err');
@@ -327,6 +339,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function refreshLeads() {
+    addRowVisible = false;
     const d = await apiGet('/api/leads');
     if (d.error) { toast('Failed to load leads', 'err'); return; }
     allLeads = d.leads || [];
@@ -508,8 +521,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── HISTORY TAB ────────────────────────────
   async function refreshHistory() {
-    const res = await fetch('/api/email_history');
-    const d = await res.json();
+    const d = await apiGet('/api/email_history');
+    if (d.error) { toast('Failed to load history', 'err'); return; }
     const tbody = document.getElementById('history-body');
     
     if (!d.history || d.history.length === 0) {
@@ -555,6 +568,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tr.id = 'add-lead-row';
     tr.className = 'add-lead-row';
     tr.innerHTML =
+      '<td></td>' +
       '<td style="color:var(--muted)">+</td>' +
       '<td><input class="field-input" id="add-company" placeholder="Company" /></td>' +
       '<td><input class="field-input" id="add-email" placeholder="hr@company.com" /></td>' +
@@ -609,7 +623,10 @@ document.addEventListener('DOMContentLoaded', () => {
       SEND_DELAY:    document.getElementById('cfg-senddelay').value,
       MAX_DAY:       document.getElementById('cfg-maxday').value,
       GEMINI_API_KEY: document.getElementById('cfg-gemini-key') ? document.getElementById('cfg-gemini-key').value : '',
+      GEMINI_MODEL: document.getElementById('cfg-gemini-model') ? document.getElementById('cfg-gemini-model').value : 'gemini-2.5-flash',
       ZEROBOUNCE_API_KEY: document.getElementById('cfg-zerobounce-key') ? document.getElementById('cfg-zerobounce-key').value : '',
+      APIFY_API_TOKEN: document.getElementById('cfg-apify-token') ? document.getElementById('cfg-apify-token').value : '',
+      ANTHROPIC_API_KEY: document.getElementById('cfg-anthropic-key') ? document.getElementById('cfg-anthropic-key').value : '',
       AI_CUSTOM_PROMPT: document.getElementById('cfg-ai-prompt') ? document.getElementById('cfg-ai-prompt').value : ''
     };
     const res = await apiPost('/api/settings', cfg);
@@ -634,7 +651,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cfg-senddelay').value = d.SEND_DELAY || '10';
     document.getElementById('cfg-maxday').value    = d.MAX_DAY || '50';
     if(document.getElementById('cfg-gemini-key')) document.getElementById('cfg-gemini-key').value = d.GEMINI_API_KEY || '';
+    if(document.getElementById('cfg-gemini-model')) document.getElementById('cfg-gemini-model').value = d.GEMINI_MODEL || 'gemini-2.5-flash';
     if(document.getElementById('cfg-zerobounce-key')) document.getElementById('cfg-zerobounce-key').value = d.ZEROBOUNCE_API_KEY || '';
+    if(document.getElementById('cfg-apify-token')) document.getElementById('cfg-apify-token').value = d.APIFY_API_TOKEN || '';
+    if(document.getElementById('cfg-anthropic-key')) document.getElementById('cfg-anthropic-key').value = d.ANTHROPIC_API_KEY || '';
     if(document.getElementById('cfg-ai-prompt')) document.getElementById('cfg-ai-prompt').value = d.AI_CUSTOM_PROMPT || '';
 
     // Also populate hunter defaults
@@ -725,8 +745,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── PIPELINE (KANBAN) ──────────────────────
   async function renderPipeline() {
-    const res = await fetch('/api/leads');
-    const d = await res.json();
+    const d = await apiGet('/api/leads');
+    if (d.error) return;
     const leads = d.leads || [];
     
     const cols = {
@@ -774,4 +794,49 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+});
+
+// ── MANUAL JOBS ────────────────────────────
+async function refreshManualJobs() {
+  const res = await apiGet('/api/manual_jobs');
+  const tbody = document.getElementById('manual-body');
+  if (!tbody) return;
+  
+  if (res.error) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--danger)">Error: ${escapeHtml(res.error)}</td></tr>`;
+    return;
+  }
+  
+  if (!res.jobs || !res.jobs.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:28px">No manual jobs.</td></tr>';
+    return;
+  }
+  
+  tbody.innerHTML = res.jobs.map((j, i) => {
+    const link = j.link ? `<a href="${escapeHtml(j.link)}" target="_blank" style="color:var(--accent2);text-decoration:none;">Apply &nearr;</a>` : '\u2014';
+    return `<tr>
+      <td style="color:var(--muted)">${i+1}</td>
+      <td>${escapeHtml(j.company || '\u2014')}</td>
+      <td style="color:var(--text-dim)">${escapeHtml(j.role || '\u2014')}</td>
+      <td style="color:var(--muted);font-size:12px;">${escapeHtml(j.location || 'LinkedIn')}</td>
+      <td>${link}</td>
+    </tr>`;
+  }).join('');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const refManBtn = document.getElementById('refresh-manual-btn');
+  if (refManBtn) refManBtn.addEventListener('click', refreshManualJobs);
+  
+  const clrManBtn = document.getElementById('clear-manual-btn');
+  if (clrManBtn) clrManBtn.addEventListener('click', async () => {
+    if (!confirm('Clear all manual jobs?')) return;
+    const res = await apiPost('/api/clear_manual_jobs');
+    if (res.ok) {
+      toast('Manual jobs cleared.', 'ok');
+      refreshManualJobs();
+    } else {
+      toast('Failed to clear.', 'err');
+    }
+  });
 });

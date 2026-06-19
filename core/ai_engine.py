@@ -15,14 +15,13 @@ def generate_custom_email(company_name, role, user_skills, base_template):
         return base_template
 
     try:
-        import google.generativeai as genai
+        from google import genai
     except ImportError:
-        print("   [AI Engine] google.generativeai not installed. Falling back to template.")
+        print("   [AI Engine] google.genai not installed. Falling back to template.")
         return base_template
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        client = genai.Client(api_key=api_key)
         
         custom_instructions = os.getenv("AI_CUSTOM_PROMPT", "")
         instruction_text = f"\nUser Custom Instructions:\n{custom_instructions}\n" if custom_instructions else ""
@@ -42,9 +41,13 @@ Base Template:
 Return ONLY the text of the custom email. Do not add conversational filler.
 """
         import time
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
         for attempt in range(3):
             try:
-                response = model.generate_content(prompt)
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
                 if response and response.text:
                     return response.text.strip()
                 break
@@ -56,5 +59,7 @@ Return ONLY the text of the custom email. Do not add conversational filler.
                 else:
                     print(f"   [AI Engine] Failed to generate custom email: {e}")
 
+    except Exception as e:
+        print(f"   [AI Engine] Global Exception: {e}")
     
     return base_template

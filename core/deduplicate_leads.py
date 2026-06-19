@@ -21,6 +21,9 @@ builtins.print = _flush_print
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 
+from filelock import FileLock
+file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
+
 def remove_duplicates():
     print(f"\n{'='*56}")
     print(f"  DEDUPLICATOR — Cleaning firms.csv")
@@ -31,32 +34,52 @@ def remove_duplicates():
         return
         
     seen_emails = set()
+    
+    # 1. Load previously emailed addresses
+    EMAIL_LOG = os.path.join(BASE_DIR, 'email_log.json')
+    if os.path.exists(EMAIL_LOG):
+        try:
+            import json
+            with open(EMAIL_LOG, 'r') as f:
+                log = json.load(f)
+                for e in log:
+                    if e.get('status') in ['sent', 'emailed', 'replied', 'interview']:
+                        em = e.get('email', '').lower().strip()
+                        if em:
+                            seen_emails.add(em)
+        except Exception:
+            pass
+            
     unique_rows = []
     duplicates = 0
     total = 0
     fieldnames = None
     
     try:
-        with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames
-            for row in reader:
-                total += 1
-                email = row.get('contact_email', '').lower().strip()
-                if email not in seen_emails and email != '':
-                    seen_emails.add(email)
-                    unique_rows.append(row)
-                else:
-                    duplicates += 1
-                    
-        if duplicates > 0:
-            with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(unique_rows)
-            print(f"✅ Cleaned up {duplicates} duplicate leads.")
-        else:
-            print("✨ No duplicates found. Your leads are clean.")
+        with file_lock:
+            with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames
+                for row in reader:
+                    total += 1
+                    email = row.get('contact_email', '').lower().strip()
+                    if email:
+                        if email not in seen_emails:
+                            seen_emails.add(email) # Prevent internal CSV duplicates too
+                            unique_rows.append(row)
+                        else:
+                            duplicates += 1
+                    else:
+                        duplicates += 1
+                        
+            if duplicates > 0:
+                with open(FIRMS_CSV, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(unique_rows)
+                print(f"✅ Cleaned up {duplicates} duplicate leads.")
+            else:
+                print("✨ No duplicates found. Your leads are clean.")
             
         print(f"   Total before: {total}")
         print(f"   Total after:  {len(unique_rows)}")

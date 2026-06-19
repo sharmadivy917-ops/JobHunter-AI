@@ -32,10 +32,14 @@ ENV_FILE = os.path.join(BASE_DIR, ".env")
 FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 EMAIL_LOG = os.path.join(BASE_DIR, "email_log.json")
 
+from filelock import FileLock
+file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
+
 load_dotenv(ENV_FILE)
 
 YOUR_EMAIL = os.environ.get("EMAIL", "")
 YOUR_PASSWORD = os.environ.get("APP_PASSWORD", "")
+YOUR_NAME = os.environ.get("YOUR_NAME", "").lower()
 
 
 def load_company_domains():
@@ -45,39 +49,41 @@ def load_company_domains():
     # From firms.csv
     if os.path.exists(FIRMS_CSV):
         try:
-            with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
-                for row in csv.DictReader(f):
-                    em = row.get('contact_email', '').lower().strip()
-                    company = row.get('company_name', '')
-                    if '@' in em:
-                        domain = em.split('@')[1]
-                        if domain not in domains:
-                            domains[domain] = []
-                        domains[domain].append({
-                            'email': em,
-                            'company': company
-                        })
-        except:
+            with file_lock:
+                with open(FIRMS_CSV, 'r', encoding='utf-8') as f:
+                    for row in csv.DictReader(f):
+                        em = row.get('contact_email', '').lower().strip()
+                        company = row.get('company_name', '')
+                        if '@' in em:
+                            domain = em.split('@')[1]
+                            if domain not in domains:
+                                domains[domain] = []
+                            domains[domain].append({
+                                'email': em,
+                                'company': company
+                            })
+        except Exception:
             pass
     
     # Also from email_log.json (for companies already sent to)
     if os.path.exists(EMAIL_LOG):
         try:
-            with open(EMAIL_LOG, 'r') as f:
-                for entry in json.load(f):
-                    em = entry.get('email', '').lower().strip()
-                    company = entry.get('company', '')
-                    if '@' in em and entry.get('status') == 'sent':
-                        domain = em.split('@')[1]
-                        if domain not in domains:
-                            domains[domain] = []
-                        # Avoid duplicates
-                        if not any(d['email'] == em for d in domains[domain]):
-                            domains[domain].append({
-                                'email': em,
-                                'company': company
-                            })
-        except:
+            with file_lock:
+                with open(EMAIL_LOG, 'r') as f:
+                    for entry in json.load(f):
+                        em = entry.get('email', '').lower().strip()
+                        company = entry.get('company', '')
+                        if '@' in em and entry.get('status') == 'sent':
+                            domain = em.split('@')[1]
+                            if domain not in domains:
+                                domains[domain] = []
+                            # Avoid duplicates
+                            if not any(d['email'] == em for d in domains[domain]):
+                                domains[domain].append({
+                                    'email': em,
+                                    'company': company
+                                })
+        except Exception:
             pass
     
     return domains
@@ -86,19 +92,23 @@ def load_company_domains():
 def load_email_log():
     if os.path.exists(EMAIL_LOG):
         try:
-            with open(EMAIL_LOG, 'r') as f:
-                return json.load(f)
-        except:
+            with file_lock:
+                with open(EMAIL_LOG, 'r') as f:
+                    return json.load(f)
+        except Exception:
             pass
     return []
 
 
 def save_email_log(log):
-    with open(EMAIL_LOG, 'w') as f:
-        json.dump(log, f, indent=4)
+    with file_lock:
+        with open(EMAIL_LOG, 'w') as f:
+            json.dump(log, f, indent=4)
 
 
 def scan_for_replies():
+    YOUR_EMAIL = os.getenv("EMAIL")
+    YOUR_PASSWORD = os.getenv("APP_PASSWORD")
     """Scan Gmail inbox for replies from companies we've emailed."""
     print(f"\n{'='*56}")
     print(f"  REPLY SCANNER — Auto-detect Company Replies")
@@ -107,6 +117,9 @@ def scan_for_replies():
     if not YOUR_EMAIL or not YOUR_PASSWORD:
         print("❌ Gmail credentials not set. Configure in Settings.")
         return
+    
+    from core.recover_sent import recover_sent_emails
+    recover_sent_emails()
     
     company_domains = load_company_domains()
     if not company_domains:
@@ -175,11 +188,15 @@ def scan_for_replies():
                                         
                                     # Stricter detection: Must be an actual reply or mention keywords
                                     subject_lower = subject.lower()
+                                    name_kws = YOUR_NAME.split() if YOUR_NAME else []
+                                    base_kws = ['interview', 'application', 'candidate', 'resume', 'offer', 'assessment']
+                                    search_kws = base_kws + name_kws
+                                    
                                     is_reply = (
                                         "re:" in subject_lower or 
                                         msg.get('In-Reply-To') or 
                                         msg.get('References') or
-                                        any(kw in subject_lower for kw in ['interview', 'application', 'candidate', 'resume', 'divy', 'sharma', 'offer', 'assessment'])
+                                        any(kw in subject_lower for kw in search_kws)
                                     )
                                     
                                     if not is_reply:

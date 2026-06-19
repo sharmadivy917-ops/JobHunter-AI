@@ -13,6 +13,8 @@ firms.csv
 email_log.json
 bounced_domains.json
 seen_jobs.json
+suppression.json
+mx_cache.json
 
 # Build artifacts
 build/

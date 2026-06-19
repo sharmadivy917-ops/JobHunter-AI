@@ -4,8 +4,10 @@ hunter.py — Role-based company discovery engine.
 Features:
   - Experience level: fresher, junior, mid, senior, lead, executive
   - Company size filter: startup, small, mid, large, mnc
-  - Multi-engine: DuckDuckGo → Bing → Google → Yahoo → Brave
+  - Multi-engine: DuckDuckGo → Bing → Brave → Yahoo → Google
+  - Parallel engine querying for faster results
   - Two-phase: get URLs from search → visit pages → extract career emails
+  - Email scoring system to filter low-quality leads
 """
 import requests
 from bs4 import BeautifulSoup
@@ -16,7 +18,10 @@ import json
 import time
 import io
 import sys
+import urllib.parse
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
 from dotenv import load_dotenv
 from core.email_validator import verify_mx, is_generic_email
 
@@ -39,6 +44,10 @@ builtins.print = _flush_print
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
+BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
+
+from filelock import FileLock
+file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
 BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
 
 load_dotenv(ENV_FILE)
@@ -156,23 +165,84 @@ def load_existing_emails():
     existing = set()
     if os.path.exists(FIRMS_CSV):
         try:
-            with open(FIRMS_CSV, "r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    if row.get("contact_email"):
-                        existing.add(row["contact_email"].lower().strip())
-        except:
-            pass
+            with file_lock:
+                with open(FIRMS_CSV, "r", encoding="utf-8") as f:
+                    for row in csv.DictReader(f):
+                        if row.get("contact_email"):
+                            existing.add(row["contact_email"].lower().strip())
+        except Exception as e:
+            print(f"Warning: Could not load existing emails: {e}")
     return existing
+
+
+def load_existing_domains():
+    """Load domains already present in firms.csv for dedup during hunt."""
+    domains = set()
+    if os.path.exists(FIRMS_CSV):
+        try:
+            with file_lock:
+                with open(FIRMS_CSV, "r", encoding="utf-8") as f:
+                    for row in csv.DictReader(f):
+                        email = row.get("contact_email", "")
+                        if email and '@' in email:
+                            domains.add(email.split('@')[1].lower().strip())
+        except Exception as e:
+            print(f"Warning: Could not load existing domains: {e}")
+    return domains
 
 
 def load_bounced_domains():
     if os.path.exists(BOUNCED_JSON):
         try:
-            with open(BOUNCED_JSON, 'r') as f:
-                return set(json.load(f))
-        except:
-            pass
+            with file_lock:
+                with open(BOUNCED_JSON, 'r') as f:
+                    return set(json.load(f))
+        except Exception as e:
+            print(f"Warning: Could not load bounced domains: {e}")
     return set()
+
+
+# ── Email Scoring System ─────────────────────
+HR_PREFIXES = {'hr', 'careers', 'recruitment', 'hiring'}
+GENERIC_PREFIXES = {'info', 'admin', 'support', 'contact', 'sales', 'marketing'}
+FREEMAIL_DOMAINS = {'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com'}
+
+def score_email(email, url="", company_name=""):
+    if "@" not in email:
+        return 0
+    """Score an email lead. Higher = more likely a real HR contact.
+    Returns an integer score; only leads with score >= 1 should be kept.
+    """
+    score = 0
+    email_lower = email.lower()
+    prefix = email_lower.split('@')[0]
+    domain = email_lower.split('@')[1]
+
+    # +3 for HR-related prefixes
+    if prefix in HR_PREFIXES or prefix.startswith(tuple(HR_PREFIXES)):
+        score += 3
+
+    # +2 for domain matching or containing company_name
+    if company_name:
+        company_clean = company_name.lower().replace(' ', '').replace('-', '')
+        domain_clean = domain.split('.')[0].replace('-', '')
+        if company_clean and (company_clean in domain_clean or domain_clean in company_clean):
+            score += 2
+
+    # +1 for email found on a careers/jobs/about page
+    url_lower = url.lower()
+    if any(kw in url_lower for kw in ['/careers', '/jobs', '/about', '/work-with-us', '/join', '/hiring']):
+        score += 1
+
+    # -2 for generic prefixes
+    if prefix in GENERIC_PREFIXES:
+        score -= 2
+
+    # -3 for freemail providers
+    if domain in FREEMAIL_DOMAINS:
+        score -= 3
+
+    return score
 
 
 
@@ -181,17 +251,19 @@ def is_valid_email(email):
     if not EMAIL_REGEX.fullmatch(email):
         return False
     domain = email.split('@')[1]
+    prefix = email.split('@')[0]
+    
     if domain in INVALID_DOMAINS:
         return False
-    # Exact domain matching for generic providers (not substring matching)
-    # This prevents false positives like 'live.com' matching 'olivecorp.com'
-    if domain in GENERIC_PROVIDERS or domain.endswith('.' + 'gmail.com'):
-        return False
-    # Check for exact domain matches for specific generic providers
-    for gp in ['yahoo.com', 'outlook.com', 'hotmail.com', 'protonmail.com', 'aol.com', 'live.com', 'icloud.com', 'rediffmail.com', 'gmail.com']:
-        if domain == gp:
+        
+    # Intelligent freemail filtering: 
+    # Only allow freemail (gmail, yahoo, etc.) if it clearly belongs to HR or recruitment
+    freemail_domains = ['yahoo.com', 'outlook.com', 'hotmail.com', 'protonmail.com', 'aol.com', 'live.com', 'icloud.com', 'rediffmail.com', 'gmail.com']
+    if domain in freemail_domains or domain in GENERIC_PROVIDERS:
+        if not (prefix in HR_PREFIXES or prefix.startswith(('hr', 'career', 'recruit', 'hire', 'job'))):
             return False
-    if is_generic_email(email): # also exclude support/admin
+            
+    if is_generic_email(email): # exclude info/admin/support
         return False
     if any(email.endswith(e) for e in BAD_EXTENSIONS):
         return False
@@ -211,12 +283,22 @@ def extract_company_name(email):
 # SEARCH ENGINES (5 engines with fallback)
 # ══════════════════════════════════════════════
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Safari/605.1.15",
+]
+
 def _make_session():
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "DNT": "1",
+        "Upgrade-Insecure-Requests": "1"
     })
     return s
 
@@ -239,12 +321,12 @@ def search_duckduckgo(query, session):
                 try:
                     real = urllib.parse.unquote(href.split('uddg=')[1].split('&')[0])
                     urls.append(real)
-                except:
+                except Exception:
                     pass
             elif href.startswith('http'):
                 urls.append(href)
         return urls
-    except:
+    except Exception:
         return []
 
 
@@ -269,7 +351,7 @@ def search_bing(query, session):
                     if href.startswith('http') and 'bing.com' not in href:
                         urls.append(href)
         return urls[:15]
-    except:
+    except Exception:
         return []
 
 
@@ -289,7 +371,7 @@ def search_google(query, session):
                 if real.startswith('http'):
                     urls.append(real)
         return urls[:15]
-    except:
+    except Exception:
         return []
 
 
@@ -322,10 +404,10 @@ def search_yahoo(query, session):
                         real = urllib.parse.unquote(href.split('RU=')[1].split('/')[0])
                         if real.startswith('http'):
                             urls.append(real)
-                    except:
+                    except Exception:
                         pass
         return urls[:15]
-    except:
+    except Exception:
         return []
 
 
@@ -348,27 +430,60 @@ def search_brave(query, session):
                 if href.startswith('http') and 'brave.com' not in href:
                     urls.append(href)
         return urls[:15]
-    except:
+    except Exception:
         return []
 
 
 ENGINES = [
-    ("Google", search_google),
     ("DuckDuckGo", search_duckduckgo),
     ("Bing", search_bing),
-    ("Yahoo", search_yahoo),
     ("Brave", search_brave),
+    ("Yahoo", search_yahoo),
+    ("Google", search_google),
 ]
 
 
 def get_result_urls(query, session):
-    """Try all engines in order, return URLs from the first that works."""
-    for name, fn in ENGINES:
-        urls = fn(query, session)
-        if urls:
-            return urls, name
-        time.sleep(0.5)
-    return [], "None"
+    """Query 2-3 engines in parallel, merge results from whichever succeed."""
+    merged_urls = []
+    engines_used = []
+    seen = set()
+
+    def _run_engine(name, fn):
+        time.sleep(0.2)  # slight stagger to avoid simultaneous hits
+        return name, fn(query, session)
+
+    # Try first 3 engines in parallel
+    batch = ENGINES[:3]
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_run_engine, name, fn): name for name, fn in batch}
+        for future in as_completed(futures, timeout=30):
+            try:
+                name, urls = future.result()
+                if urls:
+                    engines_used.append(name)
+                    for u in urls:
+                        if u not in seen:
+                            seen.add(u)
+                            merged_urls.append(u)
+            except Exception as e:
+                pass
+
+    # If parallel batch returned nothing, fall back to remaining engines sequentially
+    if not merged_urls:
+        for name, fn in ENGINES[3:]:
+            time.sleep(1.5)  # rate limiting between search engine requests
+            urls = fn(query, session)
+            if urls:
+                engines_used.append(name)
+                for u in urls:
+                    if u not in seen:
+                        seen.add(u)
+                        merged_urls.append(u)
+                break  # got results, stop fallback
+
+    engine_label = '+'.join(engines_used) if engines_used else "None"
+    return merged_urls, engine_label
 
 
 def scrape_emails_from_url(url, session):
@@ -381,7 +496,7 @@ def scrape_emails_from_url(url, session):
             return set()
         text = res.text[:500000]
         return set(EMAIL_REGEX.findall(text))
-    except:
+    except Exception:
         return set()
 
 
@@ -405,7 +520,6 @@ def deep_crawl_career_page(base_url, session):
                 # Resolve relative URLs
                 full_url = href
                 if href.startswith('/'):
-                    from urllib.parse import urlparse
                     parsed = urlparse(base_url)
                     full_url = f"{parsed.scheme}://{parsed.netloc}{href}"
                 elif not href.startswith('http'):
@@ -420,10 +534,10 @@ def deep_crawl_career_page(base_url, session):
                 sub_res = session.get(link, timeout=8, allow_redirects=True)
                 if sub_res.status_code == 200:
                     emails.update(EMAIL_REGEX.findall(sub_res.text[:300000]))
-            except:
+            except Exception:
                 pass
             time.sleep(0.5)
-    except:
+    except Exception:
         pass
     return emails
 
@@ -441,7 +555,10 @@ def hunt_for_companies():
     # Config
     roles_input = os.environ.get("HUNTER_ROLES", os.getenv("ROLES", "Software Developer, Software Intern"))
     locations_input = os.environ.get("HUNTER_LOCATIONS", os.getenv("LOCATIONS", "Remote, India"))
-    max_queries = int(os.environ.get("HUNTER_MAX", "15"))
+    try:
+        max_queries = int(os.environ.get("HUNTER_MAX", "15"))
+    except ValueError:
+        max_queries = 15
     delay = int(os.environ.get("HUNTER_DELAY", "3"))
     experience = os.environ.get("HUNTER_EXPERIENCE", "any")
     company_size = os.environ.get("HUNTER_COMPANY_SIZE", "any")
@@ -469,109 +586,13 @@ def hunt_for_companies():
     queries = generate_queries(roles, locations, experience, company_size, target_type)
     queries = queries[:max_queries]
     existing_emails = load_existing_emails()
+    existing_domains = load_existing_domains()
     bounced = load_bounced_domains()
 
     print(f"Existing leads: {len(existing_emails)}")
+    print(f"Existing domains: {len(existing_domains)}")
     print(f"Search queries: {len(queries)}")
     print(f"Bounced domains: {len(bounced)}\n")
-
-    # ── HARDCODED MNC SEED LIST ────────────────
-    if company_size.lower() == 'mnc':
-        role_str = roles[0].lower() if roles else ""
-        
-        if any(k in role_str for k in ["mechanical", "civil", "electrical", "core", "manufacturing", "production", "design"]):
-            hardcoded_mncs = [
-                ("Larsen & Toubro", "talentconnex@larsentoubro.com"),
-                ("Tata Motors", "careers@tatamotors.com"),
-                ("Mahindra & Mahindra", "careers@mahindra.com"),
-                ("General Electric", "careers@ge.com"),
-                ("Siemens", "careers.in@siemens.com"),
-                ("Bosch", "careers@in.bosch.com"),
-                ("Cummins", "careers@cummins.com"),
-                ("Boeing", "careers@boeing.com"),
-                ("Ford", "careers@ford.com"),
-                ("Hyundai", "careers@hmil.net"),
-                ("Maruti Suzuki", "careers@maruti.co.in"),
-                ("Adani Group", "careers@adani.com"),
-                ("Reliance Industries", "careers@ril.com"),
-                ("Godrej", "careers@godrej.com"),
-            ]
-        elif any(k in role_str for k in ["finance", "account", "bank", "audit", "tax"]):
-            hardcoded_mncs = [
-                ("Deloitte", "careers@deloitte.com"),
-                ("PwC", "careers.india@pwc.com"),
-                ("EY", "ey.careers@in.ey.com"),
-                ("KPMG", "india.careers@kpmg.com"),
-                ("Goldman Sachs", "careers@gs.com"),
-                ("JP Morgan", "careers@jpmorgan.com"),
-                ("Morgan Stanley", "careers@morganstanley.com"),
-                ("Citibank", "careers@citi.com"),
-                ("HSBC", "careers@hsbc.com"),
-                ("Standard Chartered", "careers@sc.com"),
-                ("Barclays", "careers@barclays.com"),
-            ]
-        else:
-            hardcoded_mncs = [
-                ("Tata Consultancy Services", "careers@tcs.com"),
-                ("Infosys", "talent@infosys.com"),
-                ("Wipro", "careers@wipro.com"),
-                ("Accenture", "india.careers@accenture.com"),
-                ("Cognizant", "careers@cognizant.com"),
-                ("Capgemini", "careers.in@capgemini.com"),
-                ("IBM", "ibmindia.careers@in.ibm.com"),
-                ("HCL Technologies", "careers@hcl.com"),
-                ("Tech Mahindra", "careers@techmahindra.com"),
-                ("Amazon", "hiring@amazon.com"),
-                ("Microsoft", "askhr@microsoft.com"),
-                ("Google", "careers@google.com"),
-                ("Meta", "careers@meta.com"),
-                ("Apple", "careers@apple.com"),
-                # Expanded list
-                ("Oracle", "careers@oracle.com"),
-                ("SAP Labs", "careers@sap.com"),
-                ("Salesforce", "careers@salesforce.com"),
-                ("Adobe", "careers@adobe.com"),
-                ("VMware", "careers@vmware.com"),
-                ("Dell Technologies", "careers@dell.com"),
-                ("HP Inc", "careers@hp.com"),
-                ("Cisco", "careers@cisco.com"),
-                ("Intel", "careers@intel.com"),
-                ("Qualcomm", "careers@qualcomm.com"),
-                ("NVIDIA", "careers@nvidia.com"),
-                ("PayPal", "careers@paypal.com"),
-                ("Uber", "careers@uber.com"),
-                ("Flipkart", "careers@flipkart.com"),
-                ("PhonePe", "careers@phonepe.com"),
-                ("Swiggy", "careers@swiggy.in"),
-                ("Razorpay", "careers@razorpay.com"),
-                ("Atlassian", "careers@atlassian.com"),
-                ("ServiceNow", "careers@servicenow.com"),
-                ("Thoughtworks", "careers@thoughtworks.com"),
-            ]
-        
-        file_exists = os.path.exists(FIRMS_CSV)
-        with open(FIRMS_CSV, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['company_name', 'contact_email', 'role', 'hr_name', 'notes', 'type'])
-            if not file_exists:
-                writer.writeheader()
-            
-            added_count = 0
-            for name, email in hardcoded_mncs:
-                if email not in existing_emails and email.split('@')[1] not in bounced:
-                    writer.writerow({
-                        'company_name': name,
-                        'contact_email': email,
-                        'role': roles[0] if roles else 'Software Developer / Intern',
-                        'hr_name': 'Talent Acquisition',
-                        'notes': f"Hardcoded Top MNC (Role: {roles[0] if roles else 'Any'})",
-                        'type': target_type if target_type != 'both' else 'job'
-                    })
-                    existing_emails.add(email)
-                    added_count += 1
-        
-        if added_count > 0:
-            print(f"[!] Injected {added_count} top hardcoded MNCs directly into leads.")
-            print(f"[!] Proceeding to search for more...\n")
 
     session = _make_session()
     new_firms = []
@@ -592,59 +613,79 @@ def hunt_for_companies():
 
         time.sleep(delay)
 
-        # Visit top pages and scrape emails
-        pages_checked = 0
+        # Visit top pages and scrape emails using multi-threading
+        pages_to_check = []
         for url in result_urls:
-            if url in visited_urls or pages_checked >= 8:
+            if url in visited_urls or len(pages_to_check) >= 8:
                 continue
+
+            try:
+                url_domain = urlparse(url).netloc.lower().replace('www.', '')
+                if url_domain in existing_domains:
+                    continue
+            except Exception:
+                pass
+
             visited_urls.add(url)
+            if not any(sd in url for sd in SKIP_SITES):
+                pages_to_check.append(url)
 
-            if any(sd in url for sd in SKIP_SITES):
-                continue
+        def _process_url(url):
+            try:
+                raw = scrape_emails_from_url(url, session)
+                if not any(skip in url for skip in ['indeed', 'glassdoor', 'naukri', 'linkedin']):
+                    deep = deep_crawl_career_page(url, session)
+                    raw = raw.union(deep)
+                return url, raw
+            except Exception:
+                return url, set()
 
-            pages_checked += 1
-            raw_emails = scrape_emails_from_url(url, session)
-            # Deep-crawl if this looks like a company homepage
-            if not any(skip in url for skip in ['indeed', 'glassdoor', 'naukri', 'linkedin']):
-                deep_emails = deep_crawl_career_page(url, session)
-                raw_emails = raw_emails.union(deep_emails)
-
-            for email in raw_emails:
-                email = email.lower().strip()
-                email = re.sub(r'^(u003e|u003c|x22|22)+', '', email)
-                if not '@' in email: continue
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(_process_url, u) for u in pages_to_check]
+            for future in as_completed(futures):
+                url, raw_emails = future.result()
                 
-                prefix = email.split('@')[0]
-                if prefix in {'info', 'admin', 'support', 'contact', 'sales', 'hello', 'team'}: continue
-                
-                domain = email.split('@')[1]
+                for email in raw_emails:
+                    email = email.lower().strip()
+                    email = re.sub(r'^(u003e|u003c|x22|22)+', '', email)
+                    if not '@' in email: continue
+                    
+                    prefix = email.split('@')[0]
+                    if prefix in {'info', 'admin', 'support', 'contact', 'sales', 'hello', 'team'}: continue
+                    
+                    domain = email.split('@')[1]
 
-                if (email not in existing_emails
-                        and is_valid_email(email)
-                        and domain not in bounced
-                        and verify_mx(domain)):
+                    if (email not in existing_emails
+                            and is_valid_email(email)
+                            and domain not in bounced
+                            and verify_mx(domain)):
 
-                    company_name = extract_company_name(email)
+                        company_name = extract_company_name(email)
 
-                    # Match role to query
-                    role = roles[0]
-                    for r in roles:
-                        if r.lower() in query.lower():
-                            role = r
-                            break
+                        email_score = score_email(email, url, company_name)
+                        if email_score < 1:
+                            print(f"   Skipped (score={email_score}): {email}")
+                            continue
 
-                    new_firms.append({
-                        "company_name": company_name,
-                        "contact_email": email,
-                        "role": role,
-                        "hr_name": "HR Team",
-                        "notes": f"Hunted for '{role}' ({exp_labels.get(experience,'')}, {size_labels.get(company_size,'')})",
-                        "type": target_type if target_type != 'both' else 'job'
-                    })
-                    existing_emails.add(email)
-                    print(f"   Found: {company_name} ({email})")
+                        role = roles[0]
+                        for r in roles:
+                            if r.lower() in query.lower():
+                                role = r
+                                break
 
-            time.sleep(1)
+                        new_firms.append({
+                            "company_name": company_name,
+                            "contact_email": email,
+                            "role": role,
+                            "hr_name": "HR Team",
+                            "notes": f"Hunted for '{role}' ({exp_labels.get(experience,'')}, {size_labels.get(company_size,'')}) [score={email_score}]",
+                            "type": target_type if target_type != 'both' else 'job'
+                        })
+                        existing_emails.add(email)
+                        existing_domains.add(domain)
+                        print(f"   Found (score={email_score}): {company_name} ({email})")
+
+        time.sleep(delay)  # rate limiting between queries
 
     # Save
     print(f"\n{'='*56}")
@@ -658,12 +699,13 @@ def hunt_for_companies():
 
     if new_firms:
         file_exists = os.path.exists(FIRMS_CSV)
-        with open(FIRMS_CSV, "a", newline='', encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["company_name", "contact_email", "role", "hr_name", "notes", "type"])
-            if not file_exists:
-                writer.writeheader()
-            for firm in new_firms:
-                writer.writerow(firm)
+        with file_lock:
+            with open(FIRMS_CSV, "a", newline='', encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["company_name", "contact_email", "role", "hr_name", "notes", "type"])
+                if not file_exists:
+                    writer.writeheader()
+                for firm in new_firms:
+                    writer.writerow(firm)
         print(f"  Saved to: {FIRMS_CSV}")
     else:
         print("  No new career emails found this run.")

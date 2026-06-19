@@ -20,7 +20,9 @@ from email.mime.base import MIMEBase
 from email import encoders
 from dotenv import load_dotenv
 from urllib.parse import urlparse
-from core.email_validator import verify_mx, verify_smtp_mailbox, is_generic_email
+from core.email_validator import verify_mx, verify_smtp_mailbox, is_generic_email, verify_zerobounce
+from core.suppression import is_suppressed
+from filelock import FileLock
 
 # Email validation patterns
 bad_prefixes = {'abuse', 'jobseeker', 'support', 'admin', 'noreply', 'hello', 'team', 'info', 'contact', 'sales'}
@@ -47,6 +49,8 @@ RESUME_PATH = ""
 
 load_dotenv(ENV_FILE)
 
+file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
+
 # Cache for MX lookups
 _mx_cache = {}
 
@@ -63,10 +67,47 @@ def get_config():
         "linkedin": os.getenv("YOUR_LINKEDIN", ""),
         "resume": os.getenv("RESUME_PATH", ""),
         "phone": os.getenv("PHONE", ""),
+        "app_base_url": os.getenv("APP_BASE_URL", "http://127.0.0.1:5000").rstrip("/"),
         "delay_min": int(os.environ.get("SEND_DELAY", os.getenv("SEND_DELAY", "15"))),
 
         "max_sends": int(os.environ.get("SEND_MAX", os.getenv("MAX_DAY", "30"))),
     }
+
+
+from urllib.parse import quote as _url_quote
+
+
+def _unsubscribe_url(cfg, to_email):
+    """Build the HTTP unsubscribe link, or '' if no base URL is configured."""
+    base = cfg.get("app_base_url", "")
+    if not base or not to_email:
+        return ""
+    return f"{base}/unsubscribe?email={_url_quote(to_email)}"
+
+
+def _unsubscribe_footer_html(cfg, to_email):
+    url = _unsubscribe_url(cfg, to_email)
+    sender_email = cfg.get("email", "")
+    if url:
+        link = f'<a href="{url}" style="color:#999;text-decoration:underline;">unsubscribe</a>'
+    else:
+        link = (f'<a href="mailto:{sender_email}?subject=unsubscribe" '
+                f'style="color:#999;text-decoration:underline;">unsubscribe</a>')
+    return (
+        '<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;">'
+        f'<p style="margin:0;color:#aaa;font-size:11px;line-height:1.6;">'
+        f"You received this because your address was listed as a hiring/careers contact. "
+        f"If this isn't relevant, you can {link} and you will not be contacted again."
+        '</p></div>'
+    )
+
+
+def _unsubscribe_footer_text(cfg, to_email):
+    url = _unsubscribe_url(cfg, to_email)
+    sender_email = cfg.get("email", "")
+    target = url if url else f"mailto:{sender_email}?subject=unsubscribe"
+    return ("\n--\nYou received this because your address was listed as a hiring/careers "
+            "contact. To stop receiving messages, unsubscribe here: " + target + "\n")
 
 SUBJECT_TEMPLATES = {
     "job": [
@@ -129,30 +170,35 @@ def get_subject(role, name, title, lead_type="job"):
 def load_email_log():
     if os.path.exists(EMAIL_LOG):
         try:
-            with open(EMAIL_LOG, 'r') as f:
-                return json.load(f)
-        except:
+            with file_lock:
+                with open(EMAIL_LOG, 'r') as f:
+                    return json.load(f)
+        except Exception:
             return []
     return []
 
 
 def save_email_log(log):
-    with open(EMAIL_LOG, 'w') as f:
-        json.dump(log, f, indent=2)
+    with file_lock:
+        with open(EMAIL_LOG, 'w') as f:
+            json.dump(log, f, indent=2)
 
 
 def get_already_sent():
     """Get set of emails already sent to."""
     log = load_email_log()
-    return {entry.get("email", "").lower() for entry in log if entry.get("status") == "sent"}
+    # If an email is in the log and not marked as 'failed', we consider it already sent.
+    # This correctly covers 'sent', 'replied', 'bounced', and 'followup_X' statuses.
+    return {entry.get("email", "").lower() for entry in log if entry.get("status") != "failed"}
 
 
 def load_bounced_domains():
     if os.path.exists(BOUNCED_JSON):
         try:
-            with open(BOUNCED_JSON, 'r') as f:
-                return set(json.load(f))
-        except:
+            with file_lock:
+                with open(BOUNCED_JSON, 'r') as f:
+                    return set(json.load(f))
+        except Exception:
             pass
     return set()
 
@@ -163,9 +209,10 @@ def save_bounced_domain(domain):
     bounced = load_bounced_domains()
     bounced.add(domain)
     try:
-        with open(BOUNCED_JSON, 'w') as f:
-            json.dump(list(bounced), f, indent=2)
-    except:
+        with file_lock:
+            with open(BOUNCED_JSON, 'w') as f:
+                json.dump(list(bounced), f, indent=2)
+    except Exception:
         pass
 
 
@@ -357,7 +404,7 @@ def _get_role_context(role: str, cfg: dict, lead_type: str = "job") -> dict:
     return COPY.get(category, COPY["general"])
 
 
-def get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes="", lead_type="job"): 
+def get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes="", lead_type="job", to_email=""): 
     """Generate the rich HTML email body with comprehensive role-specific content."""
     notes_line = ""
     if notes and len(notes) > 5:
@@ -426,13 +473,14 @@ def get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes="", lead_typ
                 <p style="margin:4px 0;color:#666;font-size:14px;">📱 {cfg['phone']}</p>
                 <p style="margin:4px 0;color:#999;font-size:13px;">Applied for: <strong>{role}</strong> {'(' + lead_type.title() + ')' if lead_type != 'job' else ''} at <strong>{company}</strong></p>
             </div>
+            {_unsubscribe_footer_html(cfg, to_email)}
         </div>
     </body>
     </html>
     """
 
 
-def get_email_plain(cfg, company, role, hr_name, ctx, ps_text, notes="", lead_type="job"): 
+def get_email_plain(cfg, company, role, hr_name, ctx, ps_text, notes="", lead_type="job", to_email=""): 
     """Plain text fallback with full personalization."""
     notes_line = f"I have been following {company}'s work..." if notes and len(notes) > 5 else ""
     import re
@@ -466,7 +514,7 @@ Best regards,
 {cfg['phone']}
 
 {ps_text}
-"""
+{_unsubscribe_footer_text(cfg, to_email)}"""
 
 
 def attach_resume(msg, resume_path):
@@ -506,12 +554,13 @@ def send_emails():
 
     # Read firms
     firms = []
-    with open(FIRMS_CSV, "r", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            firm = {k: v.strip() for k, v in row.items()}
-            if firm.get("company_name") and firm.get("contact_email"):
-                firm["type"] = firm.get("type", "").strip().lower() or _infer_type(firm.get("role", ""))
-                firms.append(firm)
+    with file_lock:
+        with open(FIRMS_CSV, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                firm = {k: v.strip() for k, v in row.items()}
+                if firm.get("company_name") and firm.get("contact_email"):
+                    firm["type"] = firm.get("type", "").strip().lower() or _infer_type(firm.get("role", ""))
+                    firms.append(firm)
 
     if not firms:
         print("No firms in database.")
@@ -522,11 +571,18 @@ def send_emails():
     bounced = load_bounced_domains()
 
     pending = []
+    suppressed_skipped = 0
     for firm in firms:
         firm_email = firm["contact_email"].lower()
         domain = firm_email.split('@')[1] if '@' in firm_email else ''
+        if is_suppressed(firm_email):
+            suppressed_skipped += 1
+            continue
         if firm_email not in already_sent and domain not in bounced:
             pending.append(firm)
+
+    if suppressed_skipped:
+        print(f"\U0001F6AB Skipped {suppressed_skipped} address(es) on the do-not-contact list.")
 
     if not pending:
         print("All firms already emailed. Add new leads or use Hunter.")
@@ -550,7 +606,7 @@ def send_emails():
     # Connect to Gmail
     print("Connecting to Gmail SMTP...")
     try:
-        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30)
         server.login(cfg["email"], cfg["password"])
     except Exception as e:
         print(f"Failed to login to Gmail: {e}")
@@ -625,7 +681,19 @@ def send_emails():
             save_email_log(log)
             continue
 
+        # ZeroBounce validation (no-op when ZEROBOUNCE_API_KEY is unset)
+        if not verify_zerobounce(to_email):
+            print(f"   ZeroBounce flagged {to_email} as invalid. Skipping.")
+            log.append({
+                "company": company, "email": to_email,
+                "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "failed"
+            })
+            save_email_log(log)
+            continue
+
         try:
+            send_success = False
             for attempt in range(3):
                 try:
                     msg = MIMEMultipart("mixed")
@@ -635,14 +703,19 @@ def send_emails():
                     msg["Reply-To"] = cfg['email']
                     msg["Date"] = email.utils.formatdate(localtime=True)
                     msg["Message-ID"] = email.utils.make_msgid(domain=cfg['email'].split('@')[1])
-                    msg['List-Unsubscribe'] = f'<mailto:{cfg["email"]}?subject=unsubscribe>'
+                    _unsub_url = _unsubscribe_url(cfg, to_email)
+                    if _unsub_url:
+                        msg['List-Unsubscribe'] = f'<{_unsub_url}>, <mailto:{cfg["email"]}?subject=unsubscribe>'
+                        msg['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
+                    else:
+                        msg['List-Unsubscribe'] = f'<mailto:{cfg["email"]}?subject=unsubscribe>'
 
                     notes = firm.get("notes", "")
                     lead_type = firm.get("type", "job")
                     
                     ctx = _get_role_context(role, cfg, lead_type=lead_type)
                     
-                    if os.getenv("GEMINI_API_KEY"):
+                    if os.getenv("GEMINI_API_KEY") and os.getenv("USE_AI", "1") == "1":
                         try:
                             from core.ai_engine import generate_custom_email
                             print(f"   [AI] Generating personalized email for {company}...")
@@ -657,8 +730,8 @@ def send_emails():
                     ps_pool = PS_LINES.get(lead_type, PS_LINES["job"])
                     ps_text = random.choice(ps_pool).format(phone=cfg.get("phone", ""))
                     
-                    plain_body = get_email_plain(cfg, company, role, hr_name, ctx, ps_text, notes, lead_type=lead_type)
-                    html_body = get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes, lead_type=lead_type)
+                    plain_body = get_email_plain(cfg, company, role, hr_name, ctx, ps_text, notes, lead_type=lead_type, to_email=to_email)
+                    html_body = get_email_html(cfg, company, role, hr_name, ctx, ps_text, notes, lead_type=lead_type, to_email=to_email)
                     
                     # Create multipart alternative - client chooses HTML or plain text
                     alt_part = MIMEMultipart("alternative")
@@ -671,6 +744,7 @@ def send_emails():
                     attach_resume(msg, cfg["resume"])
 
                     server.sendmail(cfg["email"], to_email, msg.as_string())
+                    send_success = True
                     break
                 except smtplib.SMTPServerDisconnected:
                     try:
@@ -717,15 +791,15 @@ def send_emails():
                         time.sleep(wait)
                     else:
                         raise e
-            print(f"   Sent successfully!")
-            sent_count += 1
+            if send_success:
+                print(f"   Sent successfully!")
+                sent_count += 1
 
-            log.append({
-                "company": company, "email": to_email,
-                "role": role, "type": firm.get("type", "job"), "hr_name": hr_name, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "sent"
-            })
-            save_email_log(log)
+                log.append({
+                    "company": company, "email": to_email,
+                    "role": role, "type": firm.get("type", "job"), "hr_name": hr_name, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "sent"
+                })
 
             # Random delay between sends
             if i < len(to_send):
@@ -750,12 +824,8 @@ def send_emails():
                 "status": status
             })
             
-        # Batch save every 5 emails to avoid writing 60KB constantly
-        if (sent_count % 5 == 0) or (i == len(to_send)):
-            save_email_log(log)
-
-    # Final save
-    save_email_log(log)
+        # Save immediately to prevent sending duplicates if the user stops the script
+        save_email_log(log)
 
     try:
         server.quit()

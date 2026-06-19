@@ -4,3 +4,8 @@ beautifulsoup4==4.12.3
 requests==2.32.3
 dnspython==2.7.0
 lxml
+google-genai
+filelock==3.13.1
+markupsafe==2.1.5
+apify-client
+anthropic
