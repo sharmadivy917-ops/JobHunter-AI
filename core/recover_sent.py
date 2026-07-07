@@ -7,6 +7,11 @@ import csv
 import sys
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import io
+
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_FILE = os.path.join(BASE_DIR, ".env")
@@ -14,6 +19,9 @@ EMAIL_LOG = os.path.join(BASE_DIR, "email_log.json")
 FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 
 load_dotenv(ENV_FILE)
+
+from filelock import FileLock
+file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
 YOUR_EMAIL = os.environ.get("EMAIL", "")
 YOUR_PASSWORD = os.environ.get("APP_PASSWORD", "")
 
@@ -53,9 +61,10 @@ def recover_sent_emails():
         
         # Load existing log
         try:
-            with open(EMAIL_LOG, 'r') as f:
-                log = json.load(f)
-        except:
+            with file_lock:
+                with open(EMAIL_LOG, 'r') as f:
+                    log = json.load(f)
+        except Exception:
             log = []
             
         existing_emails = {e.get('email', '').lower() for e in log}
@@ -119,8 +128,9 @@ def recover_sent_emails():
                 print(f"📋 Enriched {enriched} log entries with company/role from firms.csv.")
 
         if recovered_count > 0 or (firms_lookup and enriched > 0):
-            with open(EMAIL_LOG, 'w') as f:
-                json.dump(log, f, indent=4)
+            with file_lock:
+                with open(EMAIL_LOG, 'w') as f:
+                    json.dump(log, f, indent=4)
             if recovered_count > 0:
                 print(f"\n🎉 Successfully recovered {recovered_count} sent emails into email_log.json!")
         else:

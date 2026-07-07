@@ -13,14 +13,17 @@ import io
 import time
 import random
 import email.utils
+import re
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+from email.mime.application import MIMEApplication
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 from core.email_validator import verify_mx, verify_smtp_mailbox, is_generic_email, verify_zerobounce
+from core.error_handling import send_email_safe
 from core.suppression import is_suppressed
 from filelock import FileLock
 
@@ -557,7 +560,7 @@ def send_emails():
     with file_lock:
         with open(FIRMS_CSV, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                firm = {k: v.strip() for k, v in row.items()}
+                firm = {k: v.strip() if v is not None else "" for k, v in row.items()}
                 if firm.get("company_name") and firm.get("contact_email"):
                     firm["type"] = firm.get("type", "").strip().lower() or _infer_type(firm.get("role", ""))
                     firms.append(firm)
@@ -594,14 +597,30 @@ def send_emails():
     today = datetime.now().strftime("%Y-%m-%d")
     daily_sent = sum(1 for e in load_email_log() if e.get("status") == "sent" and e.get("sent_at", "").startswith(today))
     remaining = cfg["max_sends"] - daily_sent
+    
     if remaining <= 0:
-        print(f"⛔ Daily limit reached ({cfg['max_sends']}). Try again tomorrow.")
-        return
-    to_send = pending[:remaining]
-    print(f"📊 Daily budget: {remaining} emails remaining today.")
+        print(f"⚠️ Daily limit reached ({cfg['max_sends']}). Running live Bounce Scanner to check for failed deliveries...")
+        try:
+            from core.bounce_handler import clean_bounces
+            clean_bounces()
+            
+            # Recalculate remaining budget after cleaning bounces
+            daily_sent = sum(1 for e in load_email_log() if e.get("status") == "sent" and e.get("sent_at", "").startswith(today))
+            remaining = cfg["max_sends"] - daily_sent
+        except Exception as e:
+            print(f"   [Error] Live bounce scan failed: {e}")
+            
+        if remaining <= 0:
+            print("⛔ Daily budget is truly exhausted. Try again tomorrow.")
+            return
+        else:
+            print(f"✅ Live scan freed up {remaining} slots! Resuming operations...")
+            
+    to_send = pending
+    print(f"📊 Daily budget: {remaining} successful emails remaining today. Scanning {len(pending)} leads to hit budget...")
 
 
-    print(f"\nSending {len(to_send)} emails (skipping {len(firms)-len(pending)} already sent)...\n")
+    print(f"\nProcessing {len(to_send)} leads (skipping {len(firms)-len(pending)} already sent)...\n")
 
     # Connect to Gmail
     print("Connecting to Gmail SMTP...")
@@ -638,7 +657,7 @@ def send_emails():
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "failed"
+                "status": "skipped"
             })
             save_email_log(log)
             continue
@@ -650,7 +669,7 @@ def send_emails():
             log.append({
                 "company": company, "email": to_email,
                 "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "failed"
+                "status": "skipped"
             })
             save_email_log(log)
             continue
@@ -743,32 +762,19 @@ def send_emails():
 
                     attach_resume(msg, cfg["resume"])
 
-                    server.sendmail(cfg["email"], to_email, msg.as_string())
-                    send_success = True
-                    break
-                except smtplib.SMTPServerDisconnected:
-                    try:
+                    result = send_email_safe(server, msg, to_email)
+                    if result.ok:
+                        send_success = True
+                        break
+                    
+                    if "disconnected" in result.detail.lower():
+                        print(f"   ⚠️ Reconnected to SMTP server...")
                         server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
                         server.login(cfg['email'], cfg['password'])
-                        print(f"   ⚠️ Reconnected to SMTP server...")
-                    except Exception as e:
-                        raise Exception(f"Lost connection and reconnect failed: {e}")
-                except smtplib.SMTPRecipientsRefused:
-                    print(f"   🚫 SMTP recipients refused for {to_email}.")
-                    save_bounced_domain(domain)
-                    bounced_set.add(domain)
-                    log.append({
-                        "company": company, "email": to_email,
-                        "role": role, "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "status": "bounced"
-                    })
-                    break
-                except smtplib.SMTPException as e:
-                    # Only blacklist on permanent errors (SMTP 5xx), not transient errors
-                    error_msg = str(e).lower()
-                    if '550' in error_msg or 'permanently' in error_msg:
-                        # Permanent error - blacklist domain
-                        print(f"   🚫 Permanent SMTP error: {e}")
+                        continue
+                        
+                    if not result.retriable:
+                        print(f"   🚫 Permanent failure: {result.detail}")
                         save_bounced_domain(domain)
                         bounced_set.add(domain)
                         log.append({
@@ -777,22 +783,19 @@ def send_emails():
                             "status": "bounced"
                         })
                         break
-                    elif attempt < 2:
-                        # Transient error - retry
-                        wait = (attempt + 1) * 5
-                        print(f"   ⚠️ Transient error ({type(e).__name__}), retrying in {wait}s...")
-                        time.sleep(wait)
                     else:
-                        raise e
+                        if attempt < 2:
+                            wait = (attempt + 1) * 5
+                            print(f"   ⚠️ Transient error ({result.detail}), retrying in {wait}s...")
+                            time.sleep(wait)
+                        else:
+                            raise Exception(f"Failed after retries: {result.detail}")
                 except Exception as e:
-                    if attempt < 2:
-                        wait = (attempt + 1) * 5
-                        print(f"   ⚠️ Attempt {attempt+1} failed ({type(e).__name__}), retrying in {wait}s...")
-                        time.sleep(wait)
-                    else:
-                        raise e
+                    print(f"   ⚠️ Error building or sending message: {e}")
+                    break
+
             if send_success:
-                print(f"   Sent successfully!")
+                print("   Sent successfully!")
                 sent_count += 1
 
                 log.append({
@@ -802,7 +805,9 @@ def send_emails():
                 })
 
             # Random delay between sends
-            if i < len(to_send):
+            if sent_count >= remaining:
+                pass # Don't delay if we are about to finish
+            elif i < len(to_send):
                 base_delay = cfg["delay_min"]
                 delay = random.uniform(base_delay, base_delay * 1.5) + random.uniform(5, 15)
                 print(f"   Waiting {delay:.2f}s...")
@@ -826,6 +831,10 @@ def send_emails():
             
         # Save immediately to prevent sending duplicates if the user stops the script
         save_email_log(log)
+        
+        if sent_count >= remaining:
+            print(f"\n✅ Reached daily budget of {remaining} successful sends today!")
+            break
 
     try:
         server.quit()

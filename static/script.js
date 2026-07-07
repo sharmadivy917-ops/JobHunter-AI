@@ -7,12 +7,27 @@ document.addEventListener('DOMContentLoaded', () => {
     leads:'Leads', manual_jobs:'Manual Jobs', followups:'Follow-ups', history:'History', pipeline:'Pipeline', analytics:'Analytics', ats:'ATS Optimizer', bounces:'Bounce Handler', settings:'Settings'
   };
 
+  // Sidebar nav items have no data-tab in the template; assign them here in
+  // DOM order so tab switching works. Order MUST match the sidebar markup.
+  const NAV_TAB_ORDER = [
+    'dashboard', 'hunter', 'sender', 'leads', 'manual_jobs', 'followups',
+    'history', 'pipeline', 'analytics', 'ats', 'bounces', 'settings'
+  ];
+  document.querySelectorAll('.nav-item').forEach((el, i) => {
+    if (!el.dataset.tab && NAV_TAB_ORDER[i]) {
+      el.dataset.tab = NAV_TAB_ORDER[i];
+    }
+  });
+
   function switchTab(tabId) {
+    const navEl = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+    const paneEl = document.getElementById(`pane-${tabId}`);
+    if (!navEl || !paneEl) return;
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
     
-    document.querySelector(`.nav-item[data-tab="${tabId}"]`).classList.add('active');
-    document.getElementById(`pane-${tabId}`).classList.add('active');
+    navEl.classList.add('active');
+    paneEl.classList.add('active');
     document.getElementById('topbar-title').textContent = TAB_TITLES[tabId] || tabId;
     
     if (tabId === 'leads') refreshLeads();
@@ -56,6 +71,65 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => { t.classList.add('out'); }, 3000);
     setTimeout(() => { t.remove(); }, 3400);
   };
+
+  // ── MODAL MANAGER ─────────────────────────
+  function openModal(id) {
+    const modal = document.getElementById(id);
+    if (!modal) return;
+    modal.classList.remove('closing');
+    modal.classList.add('show');
+  }
+
+  function closeModal(id) {
+    const modal = document.getElementById(id);
+    if (!modal || !modal.classList.contains('show')) return;
+    modal.classList.add('closing');
+    setTimeout(() => {
+      modal.classList.remove('show', 'closing');
+    }, 220);
+  }
+
+  function closeAllModals() {
+    document.querySelectorAll('.modal.show').forEach(m => {
+      closeModal(m.id);
+    });
+  }
+
+  // Styled replacement for browser confirm() — returns a Promise<boolean>
+  function styledConfirm(title, message) {
+    return new Promise(resolve => {
+      document.getElementById('confirm-modal-title').textContent = title;
+      document.getElementById('confirm-modal-msg').textContent = message;
+      openModal('confirm-modal');
+
+      const doBtn = document.getElementById('btn-do-confirm');
+      const cancelBtn = document.getElementById('btn-cancel-confirm');
+
+      function cleanup(result) {
+        doBtn.removeEventListener('click', onConfirm);
+        cancelBtn.removeEventListener('click', onCancel);
+        closeModal('confirm-modal');
+        resolve(result);
+      }
+      function onConfirm() { cleanup(true); }
+      function onCancel()  { cleanup(false); }
+
+      doBtn.addEventListener('click', onConfirm);
+      cancelBtn.addEventListener('click', onCancel);
+    });
+  }
+
+  // ESC key closes all modals
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeAllModals();
+  });
+
+  // Click backdrop to close
+  document.addEventListener('click', e => {
+    if (e.target.classList.contains('modal') && e.target.classList.contains('show')) {
+      closeModal(e.target.id);
+    }
+  });
 
   // ── LOG HELPERS ────────────────────────────
   function ts() { return new Date().toLocaleTimeString(); }
@@ -230,14 +304,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('preview-email-btn').addEventListener('click', async (e) => {
     e.preventDefault();
-    const modal = document.getElementById('preview-modal');
     const container = document.getElementById('preview-container');
     container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Generating preview...</div>';
-    modal.classList.add('show');
+    openModal('preview-modal');
     
     const res = await apiGet('/api/preview_email');
     if (res.html) {
-      // Use shadow DOM to isolate styles, or iframe. iframe is safer.
       container.innerHTML = `<iframe style="width:100%;height:100%;border:none;" srcdoc="${escapeForSrcdoc(res.html)}"></iframe>`;
     } else {
       container.innerHTML = `<div style="padding:40px;color:var(--danger)">Error: ${res.error || 'Unknown error'}</div>`;
@@ -245,7 +317,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btn-close-preview').addEventListener('click', () => {
-    document.getElementById('preview-modal').classList.remove('show');
+    closeModal('preview-modal');
   });
 
   // Helper for srcdoc
@@ -268,7 +340,7 @@ document.addEventListener('DOMContentLoaded', () => {
     appendLog('sender-log', 'Starting email campaign...', 'info');
     const res = await apiPost('/api/run/send', {
       delay: parseInt(document.getElementById('s-delay').value) || 10,
-      max: parseInt(document.getElementById('s-max').value) || 30,
+      max: parseInt(document.getElementById('s-max').value) || parseInt(document.getElementById('cfg-max-day') ? document.getElementById('cfg-max-day').value : 50) || 50,
       use_ai: document.getElementById('s-use-ai') ? document.getElementById('s-use-ai').checked : true
     });
     if (res.error) {
@@ -309,7 +381,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('refresh-leads-btn').addEventListener('click', refreshLeads);
   document.getElementById('clear-sent-btn').addEventListener('click', clearSent);
-  document.getElementById('add-lead-toggle-btn').addEventListener('click', toggleAddLead);
+  document.getElementById('add-lead-toggle-btn').addEventListener('click', () => openModal('add-lead-modal'));
   document.getElementById('clear-all-btn').addEventListener('click', clearAllLeads);
   document.getElementById('delete-selected-btn').addEventListener('click', deleteSelectedLeads);
   
@@ -418,8 +490,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Bind replied buttons
     tbody.querySelectorAll('.replied-btn').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        if (!confirm('Mark as replied? This will stop all follow-ups.')) return;
+      btn.addEventListener('click', async function() {
+        const ok = await styledConfirm('Mark as Replied?', 'This will stop all automated follow-ups for this lead.');
+        if (!ok) return;
         updateStatus(this.dataset.email, 'replied');
       });
     });
@@ -434,7 +507,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const checked = document.querySelectorAll('.lead-checkbox:checked');
     if (!checked.length) return;
     
-    if (!confirm('Delete ' + checked.length + ' selected leads?')) return;
+    const ok = await styledConfirm('Delete ' + checked.length + ' Leads?', 'This will permanently remove all selected leads from your database.');
+    if (!ok) return;
     
     const emails = Array.from(checked).map(cb => cb.dataset.email);
     const res = await apiPost('/api/leads_bulk_delete', { emails: emails });
@@ -447,7 +521,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function clearAllLeads() {
-    if (!confirm('WARNING: This will delete ALL leads from firms.csv. Are you sure?')) return;
+    const ok = await styledConfirm('⚠️ Clear ALL Leads?', 'This will permanently delete every lead from firms.csv. This cannot be undone.');
+    if (!ok) return;
     const res = await apiPost('/api/clear_all_leads');
     if (res.ok) {
       toast('All leads cleared', 'ok');
@@ -455,15 +530,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function deleteLead(email) {
-    if (!confirm('Delete lead: ' + email + '?')) return;
-    const res = await apiDelete('/api/leads/' + encodeURIComponent(email));
+  // ── DELETE LEAD (uses styled delete modal) ──
+  let _deleteTargetEmail = '';
+
+  function showDeleteModal(email) {
+    _deleteTargetEmail = email;
+    document.getElementById('delete-modal-msg').textContent = 
+      'Delete lead "' + email + '" from your database? This cannot be undone.';
+    openModal('delete-modal');
+  }
+
+  document.getElementById('btn-cancel-delete').addEventListener('click', () => closeModal('delete-modal'));
+  document.getElementById('btn-confirm-delete').addEventListener('click', async () => {
+    closeModal('delete-modal');
+    if (!_deleteTargetEmail) return;
+    const res = await apiDelete('/api/leads/' + encodeURIComponent(_deleteTargetEmail));
     if (res.ok) {
       toast('Lead deleted', 'ok');
       refreshLeads();
     } else {
       toast('Delete failed', 'err');
     }
+    _deleteTargetEmail = '';
+  });
+
+  async function deleteLead(email) {
+    showDeleteModal(email);
   }
 
   async function updateStatus(email, status) {
@@ -477,7 +569,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function clearSent() {
-    if (!confirm('Remove all sent rows from firms.csv?')) return;
+    const ok = await styledConfirm('Clear Sent Leads?', 'This will remove all leads with "sent" status from firms.csv.');
+    if (!ok) return;
     const res = await apiPost('/api/clear_sent');
     if (res.ok) {
       toast('Sent leads cleared', 'ok');
@@ -511,7 +604,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function dedupeLeads() {
-    if (!confirm('Scan firms.csv and remove all duplicate email entries?')) return;
+    const ok = await styledConfirm('Remove Duplicates?', 'This will scan firms.csv and remove all duplicate email entries.');
+    if (!ok) return;
     const res = await apiPost('/api/run/deduplicate');
     if (res.ok) {
       toast('Deduplicator started', 'info');
@@ -552,56 +646,41 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ── ADD LEAD FORM ──────────────────────────
-  let addRowVisible = false;
-
-  function toggleAddLead() {
-    const tbody = document.getElementById('leads-body');
-    if (addRowVisible) {
-      const row = document.getElementById('add-lead-row');
-      if (row) row.remove();
-      addRowVisible = false;
-      return;
-    }
-    addRowVisible = true;
-    const tr = document.createElement('tr');
-    tr.id = 'add-lead-row';
-    tr.className = 'add-lead-row';
-    tr.innerHTML =
-      '<td></td>' +
-      '<td style="color:var(--muted)">+</td>' +
-      '<td><input class="field-input" id="add-company" placeholder="Company" /></td>' +
-      '<td><input class="field-input" id="add-email" placeholder="hr@company.com" /></td>' +
-      '<td><input class="field-input" id="add-role" placeholder="Role" /></td>' +
-      '<td><select class="field-input" id="add-type" style="padding:6px"><option value="job">Job</option><option value="internship">Intern</option><option value="trainee">Trainee</option></select></td>' +
-      '<td><input class="field-input" id="add-hr" placeholder="HR Name" value="HR Team" /></td>' +
-      '<td colspan="2"><button class="btn sm primary" id="add-lead-save-btn" style="width:100%">Add</button></td>';
-    tbody.insertBefore(tr, tbody.firstChild);
-
-    document.getElementById('add-lead-save-btn').addEventListener('click', saveNewLead);
-  }
-
-  async function saveNewLead() {
-    const company = document.getElementById('add-company').value.trim();
-    const email = document.getElementById('add-email').value.trim();
-    const role = document.getElementById('add-role').value.trim();
-    const hr = document.getElementById('add-hr').value.trim();
-    const type = document.getElementById('add-type').value;
+  // ── ADD LEAD MODAL ─────────────────────────
+  document.getElementById('btn-cancel-add-lead').addEventListener('click', () => closeModal('add-lead-modal'));
+  document.getElementById('btn-save-add-lead').addEventListener('click', async () => {
+    const company = document.getElementById('modal-add-company').value.trim();
+    const email   = document.getElementById('modal-add-email').value.trim();
+    const role    = document.getElementById('modal-add-role').value.trim();
+    const hr      = document.getElementById('modal-add-hr').value.trim();
+    const type    = document.getElementById('modal-add-type').value;
 
     if (!company || !email) {
-      toast('Company and email are required', 'err');
+      toast('Company and Email are required', 'err');
       return;
     }
 
-    const res = await apiPost('/api/leads', {company: company, email: email, role: role, hr: hr, type: type});
+    // Basic email format validation
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toast('Please enter a valid email address', 'err');
+      return;
+    }
+
+    const res = await apiPost('/api/leads', {company, email, role, hr, type});
     if (res.ok) {
       toast('Lead added: ' + company, 'ok');
-      addRowVisible = false;
+      closeModal('add-lead-modal');
+      // Reset form
+      document.getElementById('modal-add-company').value = '';
+      document.getElementById('modal-add-email').value = '';
+      document.getElementById('modal-add-role').value = '';
+      document.getElementById('modal-add-hr').value = 'HR Team';
+      document.getElementById('modal-add-type').value = 'job';
       refreshLeads();
     } else {
       toast('Failed to add lead: ' + (res.error || 'unknown'), 'err');
     }
-  }
+  });
 
   // ── SETTINGS ───────────────────────────────
   document.getElementById('save-settings-btn').addEventListener('click', saveSettings);
@@ -620,6 +699,7 @@ document.addEventListener('DOMContentLoaded', () => {
       APP_PASSWORD:  document.getElementById('cfg-pass').value,
       ROLES:         document.getElementById('cfg-roles').value,
       LOCATIONS:     document.getElementById('cfg-locations').value,
+      SEARXNG_URL:   document.getElementById('cfg-searxng') ? document.getElementById('cfg-searxng').value : '',
       SEND_DELAY:    document.getElementById('cfg-senddelay').value,
       MAX_DAY:       document.getElementById('cfg-maxday').value,
       GEMINI_API_KEY: document.getElementById('cfg-gemini-key') ? document.getElementById('cfg-gemini-key').value : '',
@@ -627,6 +707,9 @@ document.addEventListener('DOMContentLoaded', () => {
       ZEROBOUNCE_API_KEY: document.getElementById('cfg-zerobounce-key') ? document.getElementById('cfg-zerobounce-key').value : '',
       APIFY_API_TOKEN: document.getElementById('cfg-apify-token') ? document.getElementById('cfg-apify-token').value : '',
       ANTHROPIC_API_KEY: document.getElementById('cfg-anthropic-key') ? document.getElementById('cfg-anthropic-key').value : '',
+      OPENAI_API_KEY: document.getElementById('cfg-openai-key') ? document.getElementById('cfg-openai-key').value : '',
+      OPENAI_BASE_URL: document.getElementById('cfg-openai-url') ? document.getElementById('cfg-openai-url').value : '',
+      OPENAI_MODEL: document.getElementById('cfg-openai-model') ? document.getElementById('cfg-openai-model').value : '',
       AI_CUSTOM_PROMPT: document.getElementById('cfg-ai-prompt') ? document.getElementById('cfg-ai-prompt').value : ''
     };
     const res = await apiPost('/api/settings', cfg);
@@ -646,8 +729,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cfg-portfolio').value = d.YOUR_PORTFOLIO || '';
     document.getElementById('cfg-linkedin').value  = d.YOUR_LINKEDIN || '';
     document.getElementById('cfg-gmail').value     = d.EMAIL || '';
+    document.getElementById('cfg-pass').value      = d.APP_PASSWORD || '';
     document.getElementById('cfg-roles').value     = d.ROLES || '';
     document.getElementById('cfg-locations').value = d.LOCATIONS || '';
+    if(document.getElementById('cfg-searxng')) document.getElementById('cfg-searxng').value = d.SEARXNG_URL || 'http://localhost:8080';
     document.getElementById('cfg-senddelay').value = d.SEND_DELAY || '10';
     document.getElementById('cfg-maxday').value    = d.MAX_DAY || '50';
     if(document.getElementById('cfg-gemini-key')) document.getElementById('cfg-gemini-key').value = d.GEMINI_API_KEY || '';
@@ -655,6 +740,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if(document.getElementById('cfg-zerobounce-key')) document.getElementById('cfg-zerobounce-key').value = d.ZEROBOUNCE_API_KEY || '';
     if(document.getElementById('cfg-apify-token')) document.getElementById('cfg-apify-token').value = d.APIFY_API_TOKEN || '';
     if(document.getElementById('cfg-anthropic-key')) document.getElementById('cfg-anthropic-key').value = d.ANTHROPIC_API_KEY || '';
+    if(document.getElementById('cfg-openai-key')) document.getElementById('cfg-openai-key').value = d.OPENAI_API_KEY || '';
+    if(document.getElementById('cfg-openai-url')) document.getElementById('cfg-openai-url').value = d.OPENAI_BASE_URL || '';
+    if(document.getElementById('cfg-openai-model')) document.getElementById('cfg-openai-model').value = d.OPENAI_MODEL || '';
     if(document.getElementById('cfg-ai-prompt')) document.getElementById('cfg-ai-prompt').value = d.AI_CUSTOM_PROMPT || '';
 
     // Also populate hunter defaults
@@ -764,6 +852,18 @@ document.addEventListener('DOMContentLoaded', () => {
       const dz = el.querySelector('.kanban-dropzone');
       dz.innerHTML = '';
       dz.dataset.status = colId.replace('kb-', '');
+
+      // Monospace count badge in the column header, e.g. [ 12 ]
+      const header = el.querySelector('.kanban-col-header');
+      if (header) {
+        let counter = header.querySelector('.kanban-count');
+        if (!counter) {
+          counter = document.createElement('span');
+          counter.className = 'kanban-count';
+          header.appendChild(counter);
+        }
+        counter.textContent = '[ ' + items.length + ' ]';
+      }
       
       dz.addEventListener('dragover', e => {
         e.preventDefault();
@@ -794,43 +894,41 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-});
+  // ── MANUAL JOBS (moved inside DOMContentLoaded scope) ──
+  window.refreshManualJobs = async function refreshManualJobs() {
+    const res = await apiGet('/api/manual_jobs');
+    const tbody = document.getElementById('manual-body');
+    if (!tbody) return;
+    
+    if (res.error) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--danger)">Error: ${escapeHtml(res.error)}</td></tr>`;
+      return;
+    }
+    
+    if (!res.jobs || !res.jobs.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:28px">No manual jobs.</td></tr>';
+      return;
+    }
+    
+    tbody.innerHTML = res.jobs.map((j, i) => {
+      const link = j.link ? `<a href="${escapeHtml(j.link)}" target="_blank" style="color:var(--accent2);text-decoration:none;">Apply &nearr;</a>` : '\u2014';
+      return `<tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td>${escapeHtml(j.company || '\u2014')}</td>
+        <td style="color:var(--text-dim)">${escapeHtml(j.role || '\u2014')}</td>
+        <td style="color:var(--muted);font-size:12px;">${escapeHtml(j.location || 'LinkedIn')}</td>
+        <td>${link}</td>
+      </tr>`;
+    }).join('');
+  };
 
-// ── MANUAL JOBS ────────────────────────────
-async function refreshManualJobs() {
-  const res = await apiGet('/api/manual_jobs');
-  const tbody = document.getElementById('manual-body');
-  if (!tbody) return;
-  
-  if (res.error) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--danger)">Error: ${escapeHtml(res.error)}</td></tr>`;
-    return;
-  }
-  
-  if (!res.jobs || !res.jobs.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:28px">No manual jobs.</td></tr>';
-    return;
-  }
-  
-  tbody.innerHTML = res.jobs.map((j, i) => {
-    const link = j.link ? `<a href="${escapeHtml(j.link)}" target="_blank" style="color:var(--accent2);text-decoration:none;">Apply &nearr;</a>` : '\u2014';
-    return `<tr>
-      <td style="color:var(--muted)">${i+1}</td>
-      <td>${escapeHtml(j.company || '\u2014')}</td>
-      <td style="color:var(--text-dim)">${escapeHtml(j.role || '\u2014')}</td>
-      <td style="color:var(--muted);font-size:12px;">${escapeHtml(j.location || 'LinkedIn')}</td>
-      <td>${link}</td>
-    </tr>`;
-  }).join('');
-}
-
-document.addEventListener('DOMContentLoaded', () => {
   const refManBtn = document.getElementById('refresh-manual-btn');
   if (refManBtn) refManBtn.addEventListener('click', refreshManualJobs);
   
   const clrManBtn = document.getElementById('clear-manual-btn');
   if (clrManBtn) clrManBtn.addEventListener('click', async () => {
-    if (!confirm('Clear all manual jobs?')) return;
+    const ok = await styledConfirm('Clear Manual Jobs?', 'This will remove all manual job entries.');
+    if (!ok) return;
     const res = await apiPost('/api/clear_manual_jobs');
     if (res.ok) {
       toast('Manual jobs cleared.', 'ok');
@@ -839,4 +937,5 @@ document.addEventListener('DOMContentLoaded', () => {
       toast('Failed to clear.', 'err');
     }
   });
+
 });

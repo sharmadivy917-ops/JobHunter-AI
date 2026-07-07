@@ -107,9 +107,9 @@ def save_email_log(log):
 
 
 def scan_for_replies():
+    """Scan Gmail inbox for replies from companies we've emailed."""
     YOUR_EMAIL = os.getenv("EMAIL")
     YOUR_PASSWORD = os.getenv("APP_PASSWORD")
-    """Scan Gmail inbox for replies from companies we've emailed."""
     print(f"\n{'='*56}")
     print(f"  REPLY SCANNER — Auto-detect Company Replies")
     print(f"{'='*56}\n")

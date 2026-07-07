@@ -56,8 +56,11 @@ BOUNCED_JSON = os.path.join(BASE_DIR, 'bounced_domains.json')
 def load_bounced_domains():
     if os.path.exists(BOUNCED_JSON):
         try:
-            with open(BOUNCED_JSON, 'r') as f:
-                return set(json.load(f))
+            from filelock import FileLock
+            _flock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
+            with _flock:
+                with open(BOUNCED_JSON, 'r') as f:
+                    return set(json.load(f))
         except: pass
     return set()
 
@@ -66,8 +69,11 @@ def save_bounced_domain(domain):
     b = load_bounced_domains()
     b.add(domain)
     try:
-        with open(BOUNCED_JSON, 'w') as f:
-            json.dump(list(b), f, indent=2)
+        from filelock import FileLock
+        _flock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
+        with _flock:
+            with open(BOUNCED_JSON, 'w') as f:
+                json.dump(list(b), f, indent=2)
     except: pass
 
 def get_imap_connection():
@@ -96,18 +102,23 @@ def check_if_replied(mail, email):
     except:
         return False
 
+from filelock import FileLock
+file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
+
 def load_email_log():
     if not os.path.exists(EMAIL_LOG):
         return []
     try:
-        with open(EMAIL_LOG, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with file_lock:
+            with open(EMAIL_LOG, "r", encoding="utf-8") as f:
+                return json.load(f)
     except json.JSONDecodeError:
         return []
 
 def save_email_log(log):
-    with open(EMAIL_LOG, "w", encoding="utf-8") as f:
-        json.dump(log, f, indent=4)
+    with file_lock:
+        with open(EMAIL_LOG, "w", encoding="utf-8") as f:
+            json.dump(log, f, indent=4)
 
 
 # ─────────────────────────────────────────────
@@ -459,16 +470,16 @@ def main():
         hr_name = entry.get("hr_name", "Hiring Manager")
         lead_type = entry.get("type", "job")
         
-        print(f"[{idx+1}/{len(targets)}] 📨 Following up with {company} ({email}) — {STAGE_LABELS[stage]}")
+        print(f"[{idx+1}/{len(targets)}] 📨 Following up with {company} ({entry_email}) — {STAGE_LABELS[stage]}")
         
         # Suppression check
-        if is_suppressed(email):
-            print(f"   ⏭️ Skipping {email} (suppressed)")
+        if is_suppressed(entry_email):
+            print(f"   ⏭️ Skipping {entry_email} (suppressed)")
             continue
         
-        domain = email.split('@')[1] if '@' in email else ""
+        domain = entry_email.split('@')[1] if '@' in entry_email else ""
         
-        if domain in bounced or email in bounced:
+        if domain in bounced or entry_email in bounced:
             print(f"   🚫 Skipping: Domain/Email is on the bounce list.")
             if not args.dry_run:
                 log[log_idx]["status"] = "bounced"
@@ -476,8 +487,8 @@ def main():
             continue
             
         # Generic check
-        if is_generic_email(email):
-            print(f"   ⚠️ Skipping generic email: {email}")
+        if is_generic_email(entry_email):
+            print(f"   ⚠️ Skipping generic email: {entry_email}")
             if not args.dry_run:
                 log[log_idx]["status"] = "failed"
                 _unsaved_changes += 1
@@ -494,8 +505,8 @@ def main():
             continue
             
         # SMTP Deep ping
-        if not verify_smtp_mailbox(email, YOUR_EMAIL):
-            print(f"   🚫 SMTP mailbox verification failed for {email}. Skipping.")
+        if not verify_smtp_mailbox(entry_email, YOUR_EMAIL):
+            print(f"   🚫 SMTP mailbox verification failed for {entry_email}. Skipping.")
             save_bounced_domain(domain)
             bounced.add(domain)
             if not args.dry_run:
@@ -503,7 +514,7 @@ def main():
                 _unsaved_changes += 1
             continue
             
-        if mail and check_if_replied(mail, email):
+        if mail and check_if_replied(mail, entry_email):
             print(f"   🎉 SUCCESS: They already replied! Cancelling all follow-ups.")
             if not args.dry_run:
                 log[log_idx]["status"] = "replied"
@@ -511,7 +522,7 @@ def main():
             continue
 
         success = send_follow_up(
-            email, company, role, hr_name, stage, 
+            entry_email, company, role, hr_name, stage, 
             lead_type=lead_type, dry_run=args.dry_run, smtp_conn=smtp_conn
         )
         if success:

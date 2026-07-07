@@ -24,6 +24,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIRMS_CSV = os.path.join(BASE_DIR, "firms.csv")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
+EMAIL_LOG = os.path.join(BASE_DIR, "email_log.json")
 
 from filelock import FileLock
 file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
@@ -158,6 +159,30 @@ def clean_bounces():
                     writer.writerows(rows)
 
         print(f"   ✅ Removed {removed_count} bounced companies from firms.csv!")
+        
+        # Update email_log.json to mark them as bounced so they don't count against the daily limit
+        if os.path.exists(EMAIL_LOG):
+            try:
+                with file_lock:
+                    with open(EMAIL_LOG, 'r') as f:
+                        log_data = json.load(f)
+                    
+                    updated_log = False
+                    for entry in log_data:
+                        em = entry.get("email", "").lower()
+                        domain = em.split('@')[1] if '@' in em else ''
+                        if em in bounced_emails or domain in bounced_domains:
+                            if entry.get("status") == "sent":
+                                entry["status"] = "bounced"
+                                updated_log = True
+                                
+                    if updated_log:
+                        with open(EMAIL_LOG, 'w') as f:
+                            json.dump(log_data, f, indent=2)
+                        print("   ✅ Updated email_log.json so bounced emails no longer consume your daily budget!")
+            except Exception as e:
+                pass
+
         print("🎉 Inbox cleaned up!")
 
     except Exception as e:

@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 from dotenv import load_dotenv
-from core.email_validator import verify_mx, is_generic_email
+from core.email_validator import verify_mx, is_generic_email, flush_mx_cache
 
 # MX lookup cache
 _mx_cache = {}
@@ -48,10 +48,16 @@ BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
 
 from filelock import FileLock
 file_lock = FileLock(os.path.join(BASE_DIR, 'jobhunter.lock'), timeout=30)
-BOUNCED_JSON = os.path.join(BASE_DIR, "bounced_domains.json")
 
 load_dotenv(ENV_FILE)
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip('/')
+# Query several engines so a single blocked engine doesn't zero out results.
+SEARXNG_ENGINES = os.getenv("SEARXNG_ENGINES", "google,bing,duckduckgo,brave")
 
+# In-process cache of SearXNG results, keyed by query. Avoids re-hitting the
+# instance for repeated identical queries within a single hunt run.
+_searxng_cache = {}
+_SEARXNG_CACHE_TTL = 900  # seconds
 EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,8}\b')
 
 VALID_EMAIL_KEYWORDS = ['hr@', 'career', 'job', 'join', 'talent', 'resume',
@@ -191,6 +197,28 @@ def load_existing_domains():
     return domains
 
 
+def load_existing_leads():
+    """Read firms.csv once and return (emails, domains) sets for dedup.
+    Replaces the two separate full-file reads done by load_existing_emails()
+    and load_existing_domains().
+    """
+    emails = set()
+    domains = set()
+    if os.path.exists(FIRMS_CSV):
+        try:
+            with file_lock:
+                with open(FIRMS_CSV, "r", encoding="utf-8") as f:
+                    for row in csv.DictReader(f):
+                        email = (row.get("contact_email") or "").lower().strip()
+                        if email:
+                            emails.add(email)
+                            if '@' in email:
+                                domains.add(email.split('@')[1])
+        except Exception as e:
+            print(f"Warning: Could not load existing leads: {e}")
+    return emails, domains
+
+
 def load_bounced_domains():
     if os.path.exists(BOUNCED_JSON):
         try:
@@ -208,11 +236,11 @@ GENERIC_PREFIXES = {'info', 'admin', 'support', 'contact', 'sales', 'marketing'}
 FREEMAIL_DOMAINS = {'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com'}
 
 def score_email(email, url="", company_name=""):
-    if "@" not in email:
-        return 0
     """Score an email lead. Higher = more likely a real HR contact.
     Returns an integer score; only leads with score >= 1 should be kept.
     """
+    if "@" not in email:
+        return 0
     score = 0
     email_lower = email.lower()
     prefix = email_lower.split('@')[0]
@@ -301,6 +329,116 @@ def _make_session():
         "Upgrade-Insecure-Requests": "1"
     })
     return s
+
+
+
+# Markers that indicate the engine served a block / CAPTCHA page.
+BLOCK_MARKERS = ('captcha', 'anomaly', 'unusual traffic', 'are you a robot',
+                 'verify you are human', 'detected unusual')
+
+
+def _looks_blocked(text):
+    low = text[:4000].lower()
+    return any(m in low for m in BLOCK_MARKERS)
+
+
+def _request_with_retry(session, url, *, timeout=20, retries=3, allow_redirects=True):
+    """GET with exponential backoff + per-request UA rotation.
+
+    Returns the Response on success, or None if all attempts fail or the
+    response looks like a block/CAPTCHA page.
+    """
+    backoff = 1.5
+    for attempt in range(retries):
+        try:
+            headers = {"User-Agent": random.choice(USER_AGENTS)}
+            res = session.get(url, timeout=timeout, allow_redirects=allow_redirects,
+                              headers=headers)
+            if res.status_code == 429:
+                time.sleep(backoff ** (attempt + 1))
+                continue
+            if res.status_code != 200:
+                return None
+            if _looks_blocked(res.text):
+                return None
+            return res
+        except requests.RequestException:
+            time.sleep(backoff ** attempt)
+    return None
+
+
+def _restart_searxng():
+    """Restart the SearXNG container, trying Docker Compose v2 then v1."""
+    import subprocess
+    for cmd in (["docker", "compose", "restart", "searxng"],
+                ["docker-compose", "restart", "searxng"]):
+        try:
+            subprocess.run(cmd, cwd=BASE_DIR, timeout=30, capture_output=True)
+            time.sleep(5)  # give the container a few seconds to boot
+            return True
+        except FileNotFoundError:
+            continue  # this compose CLI isn't installed, try the next
+        except Exception as e:
+            print(f"   [SearXNG Restart Failed] {e}")
+            return False
+    print("   [SearXNG] No docker/docker-compose CLI found; skipping restart.")
+    return False
+
+
+def search_searxng(query, session):
+    """Query a SearXNG instance (keyless, metasearch) and return result URLs.
+
+    Aggregates several engines so one blocked engine doesn't zero out results.
+    Results are cached per-query for the run; the container is only restarted
+    when a query genuinely returns nothing while engines report as unresponsive.
+    """
+    if not SEARXNG_URL:
+        return []
+
+    cached = _searxng_cache.get(query)
+    if cached and (time.time() - cached[0]) < _SEARXNG_CACHE_TTL:
+        return cached[1]
+
+    url = (f"{SEARXNG_URL}/search?q={urllib.parse.quote(query)}"
+           f"&format=json&language=en&safesearch=0&engines={SEARXNG_ENGINES}")
+
+    def _execute():
+        res = session.get(url, timeout=20,
+                          headers={"User-Agent": random.choice(USER_AGENTS),
+                                   "Accept": "application/json",
+                                   "X-Forwarded-For": "127.0.0.1",
+                                   "X-Real-IP": "127.0.0.1"})
+        if res.status_code != 200:
+            raise Exception(f"HTTP {res.status_code}")
+
+        data = res.json()
+        urls = []
+        for item in data.get("results", []):
+            u = item.get("url", "")
+            if u.startswith("http"):
+                urls.append(u)
+
+        # Only treat as a failure worth restarting for if we got NOTHING back
+        # while engines were reported unresponsive (i.e. all blocked/throttled).
+        if not urls and data.get("unresponsive_engines"):
+            raise Exception("No results; engines unresponsive/blocked")
+        return urls[:20]
+
+    try:
+        urls = _execute()
+    except Exception as e:
+        print(f"   [SearXNG Issue] {e}. Restarting container and retrying once...")
+        if _restart_searxng():
+            try:
+                urls = _execute()
+            except Exception as retry_e:
+                print(f"   [SearXNG Retry Failed] {retry_e}")
+                urls = []
+        else:
+            urls = []
+
+    _searxng_cache[query] = (time.time(), urls)
+    return urls
 
 
 def search_duckduckgo(query, session):
@@ -444,10 +582,20 @@ ENGINES = [
 
 
 def get_result_urls(query, session):
-    """Query 2-3 engines in parallel, merge results from whichever succeed."""
+    """SearXNG first (keyless, reliable); fall back to scraped engines."""
     merged_urls = []
     engines_used = []
     seen = set()
+
+    # ── Primary: SearXNG (local/self-hosted, no key) ──
+    sx_urls = search_searxng(query, session)
+    if sx_urls:
+        engines_used.append("SearXNG")
+        for u in sx_urls:
+            if u not in seen:
+                seen.add(u)
+                merged_urls.append(u)
+        return merged_urls, "SearXNG"
 
     def _run_engine(name, fn):
         time.sleep(0.2)  # slight stagger to avoid simultaneous hits
@@ -457,17 +605,20 @@ def get_result_urls(query, session):
     batch = ENGINES[:3]
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(_run_engine, name, fn): name for name, fn in batch}
-        for future in as_completed(futures, timeout=30):
-            try:
-                name, urls = future.result()
-                if urls:
-                    engines_used.append(name)
-                    for u in urls:
-                        if u not in seen:
-                            seen.add(u)
-                            merged_urls.append(u)
-            except Exception as e:
-                pass
+        try:
+            for future in as_completed(futures, timeout=30):
+                try:
+                    name, urls = future.result()
+                    if urls:
+                        engines_used.append(name)
+                        for u in urls:
+                            if u not in seen:
+                                seen.add(u)
+                                merged_urls.append(u)
+                except Exception as e:
+                    pass
+        except TimeoutError:
+            print("   [Timeout] Some search engines took too long to respond.")
 
     # If parallel batch returned nothing, fall back to remaining engines sequentially
     if not merged_urls:
@@ -486,18 +637,41 @@ def get_result_urls(query, session):
     return merged_urls, engine_label
 
 
+# Matches obfuscated emails like "name [at] company [dot] com" or
+# "name (at) company (dot) com" or "name at company dot com".
+_OBFUSCATED_RE = re.compile(
+    r'([A-Za-z0-9._%+-]+)\s*(?:\[at\]|\(at\)|\{at\}|\s+at\s+)\s*'
+    r'([A-Za-z0-9.-]+)\s*(?:\[dot\]|\(dot\)|\{dot\}|\s+dot\s+)\s*'
+    r'([A-Za-z]{2,8})',
+    re.IGNORECASE,
+)
+
+
+def _extract_emails(html):
+    """Pull emails from raw regex, mailto: links, and obfuscated forms."""
+    found = set(EMAIL_REGEX.findall(html))
+
+    # mailto: links are the highest-signal source
+    for m in re.findall(r'mailto:([^"\'>?\s]+)', html, re.IGNORECASE):
+        addr = m.strip().lower()
+        if '@' in addr:
+            found.add(addr)
+
+    # de-obfuscate "name [at] company [dot] com"
+    for user, dom, tld in _OBFUSCATED_RE.findall(html):
+        found.add(f"{user}@{dom}.{tld}".lower())
+
+    return found
+
+
 def scrape_emails_from_url(url, session):
     """Visit a URL and extract email addresses from its content."""
     if any(sd in url for sd in SKIP_SITES):
         return set()
-    try:
-        res = session.get(url, timeout=10, allow_redirects=True)
-        if res.status_code != 200:
-            return set()
-        text = res.text[:500000]
-        return set(EMAIL_REGEX.findall(text))
-    except Exception:
+    res = _request_with_retry(session, url, timeout=10, retries=2)
+    if res is None:
         return set()
+    return _extract_emails(res.text[:500000])
 
 
 def deep_crawl_career_page(base_url, session):
@@ -585,8 +759,7 @@ def hunt_for_companies():
 
     queries = generate_queries(roles, locations, experience, company_size, target_type)
     queries = queries[:max_queries]
-    existing_emails = load_existing_emails()
-    existing_domains = load_existing_domains()
+    existing_emails, existing_domains = load_existing_leads()
     bounced = load_bounced_domains()
 
     print(f"Existing leads: {len(existing_emails)}")
@@ -599,93 +772,102 @@ def hunt_for_companies():
     visited_urls = set()
     engine_stats = {}
 
-    for qi, query in enumerate(queries, 1):
-        print(f"\n[{qi}/{len(queries)}] Searching: {query[:65]}...")
+    try:
+        for qi, query in enumerate(queries, 1):
+            print(f"\n[{qi}/{len(queries)}] Searching: {query[:65]}...")
 
-        result_urls, engine = get_result_urls(query, session)
-        engine_stats[engine] = engine_stats.get(engine, 0) + 1
-        print(f"   Engine: {engine} | URLs: {len(result_urls)}")
+            result_urls, engine = get_result_urls(query, session)
+            engine_stats[engine] = engine_stats.get(engine, 0) + 1
+            print(f"   Engine: {engine} | URLs: {len(result_urls)}")
 
-        if not result_urls:
-            print(f"   No results from any engine.")
-            time.sleep(delay * 2)
-            continue
-
-        time.sleep(delay)
-
-        # Visit top pages and scrape emails using multi-threading
-        pages_to_check = []
-        for url in result_urls:
-            if url in visited_urls or len(pages_to_check) >= 8:
+            if not result_urls:
+                print(f"   No results from any engine.")
+                time.sleep(delay * 2)
                 continue
 
-            try:
-                url_domain = urlparse(url).netloc.lower().replace('www.', '')
-                if url_domain in existing_domains:
+            time.sleep(delay)
+
+            # Visit top pages and scrape emails using multi-threading
+            pages_to_check = []
+            for url in result_urls:
+                if url in visited_urls or len(pages_to_check) >= 8:
                     continue
-            except Exception:
-                pass
 
-            visited_urls.add(url)
-            if not any(sd in url for sd in SKIP_SITES):
-                pages_to_check.append(url)
+                try:
+                    url_domain = urlparse(url).netloc.lower().replace('www.', '')
+                    if url_domain in existing_domains:
+                        continue
+                except Exception:
+                    pass
 
-        def _process_url(url):
-            try:
-                raw = scrape_emails_from_url(url, session)
-                if not any(skip in url for skip in ['indeed', 'glassdoor', 'naukri', 'linkedin']):
-                    deep = deep_crawl_career_page(url, session)
-                    raw = raw.union(deep)
-                return url, raw
-            except Exception:
-                return url, set()
+                visited_urls.add(url)
+                if not any(sd in url for sd in SKIP_SITES):
+                    pages_to_check.append(url)
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(_process_url, u) for u in pages_to_check]
-            for future in as_completed(futures):
-                url, raw_emails = future.result()
-                
-                for email in raw_emails:
-                    email = email.lower().strip()
-                    email = re.sub(r'^(u003e|u003c|x22|22)+', '', email)
-                    if not '@' in email: continue
+            def _process_url(url):
+                try:
+                    raw = scrape_emails_from_url(url, session)
+                    if not any(skip in url for skip in ['indeed', 'glassdoor', 'naukri', 'linkedin']):
+                        deep = deep_crawl_career_page(url, session)
+                        raw = raw.union(deep)
+                    return url, raw
+                except Exception:
+                    return url, set()
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(_process_url, u) for u in pages_to_check]
+                for future in as_completed(futures):
+                    url, raw_emails = future.result()
                     
-                    prefix = email.split('@')[0]
-                    if prefix in {'info', 'admin', 'support', 'contact', 'sales', 'hello', 'team'}: continue
-                    
-                    domain = email.split('@')[1]
+                    for email in raw_emails:
+                        email = email.lower().strip()
+                        email = re.sub(r'^(u003e|u003c|x22|22)+', '', email)
+                        if not '@' in email: continue
+                        
+                        prefix = email.split('@')[0]
+                        if prefix in {'info', 'admin', 'support', 'contact', 'sales', 'hello', 'team'}: continue
+                        
+                        domain = email.split('@')[1]
 
-                    if (email not in existing_emails
-                            and is_valid_email(email)
-                            and domain not in bounced
-                            and verify_mx(domain)):
+                        if (email not in existing_emails
+                                and is_valid_email(email)
+                                and domain not in bounced
+                                and verify_mx(domain)):
 
-                        company_name = extract_company_name(email)
+                            company_name = extract_company_name(email)
 
-                        email_score = score_email(email, url, company_name)
-                        if email_score < 1:
-                            print(f"   Skipped (score={email_score}): {email}")
-                            continue
+                            email_score = score_email(email, url, company_name)
+                            if email_score < 1:
+                                print(f"   Skipped (score={email_score}): {email}")
+                                continue
 
-                        role = roles[0]
-                        for r in roles:
-                            if r.lower() in query.lower():
-                                role = r
-                                break
+                            role = roles[0]
+                            for r in roles:
+                                if r.lower() in query.lower():
+                                    role = r
+                                    break
 
-                        new_firms.append({
-                            "company_name": company_name,
-                            "contact_email": email,
-                            "role": role,
-                            "hr_name": "HR Team",
-                            "notes": f"Hunted for '{role}' ({exp_labels.get(experience,'')}, {size_labels.get(company_size,'')}) [score={email_score}]",
-                            "type": target_type if target_type != 'both' else 'job'
-                        })
-                        existing_emails.add(email)
-                        existing_domains.add(domain)
-                        print(f"   Found (score={email_score}): {company_name} ({email})")
+                            new_firms.append({
+                                "company_name": company_name,
+                                "contact_email": email,
+                                "role": role,
+                                "hr_name": "HR Team",
+                                "notes": f"Hunted for '{role}' ({exp_labels.get(experience,'')}, {size_labels.get(company_size,'')}) [score={email_score}]",
+                                "type": target_type if target_type != 'both' else 'job'
+                            })
+                            existing_emails.add(email)
+                            existing_domains.add(domain)
+                            print(f"   Found (score={email_score}): {company_name} ({email})")
 
-        time.sleep(delay)  # rate limiting between queries
+            time.sleep(delay)  # rate limiting between queries
+    except KeyboardInterrupt:
+        print("\n[!] Hunter stopped by user. Saving leads found so far...")
+    except Exception as e:
+        print(f"\n[!] Hunter encountered an error: {e}")
+        print("    Saving leads found so far...")
+
+    # Persist any buffered MX lookups so the next run reuses them.
+    flush_mx_cache()
 
     # Save
     print(f"\n{'='*56}")

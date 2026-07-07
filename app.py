@@ -191,7 +191,7 @@ def _compute_stats():
                         dom = em.split('@')[1] if '@' in em else ''
                         if em in sent_emails:
                             sent += 1
-                        elif dom and dom in bounced_domains or em and em in bounced_emails_log:
+                        elif (dom and dom in bounced_domains) or (em and em in bounced_emails_log):
                             bounced_in_csv += 1
                         else:
                             pending += 1
@@ -238,7 +238,7 @@ def run_script(script_name, env_overrides=None, script_args=None):
         load_dotenv(ENV_FILE, override=True)
         for key in ['EMAIL', 'APP_PASSWORD', 'YOUR_NAME', 'YOUR_TITLE', 'YOUR_SKILLS',
                      'ROLES', 'LOCATIONS', 'RESUME_PATH', 'YOUR_PORTFOLIO', 'YOUR_LINKEDIN', 'PHONE',
-                     'SEND_DELAY', 'MAX_DAY']:
+                     'SEND_DELAY', 'MAX_DAY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'APIFY_API_TOKEN', 'SEARXNG_URL']:
             val = os.getenv(key)
             if val:
                 env[key] = val
@@ -341,6 +341,8 @@ def run_action(action):
             
         if data.get('source') == 'linkedin':
             script_name = "linkedin_hunter.py"
+        elif data.get('source') == 'adzuna':
+            script_name = "job_discovery.py"
         else:
             script_name = "apify_hunter.py" if data.get('use_ai') else "hunter.py"
         t = threading.Thread(target=run_script, args=(script_name,), kwargs={"env_overrides": env})
@@ -389,12 +391,15 @@ def run_action(action):
             return jsonify({"error": "No description provided."})
         
         try:
-            from google import genai
-            api_key = os.getenv("GEMINI_API_KEY")
+            from openai import OpenAI
+            api_key = os.getenv("OPENAI_API_KEY")
+            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
             if not api_key:
-                return jsonify({"error": "Please set GEMINI_API_KEY in settings to use ATS Optimizer."})
+                api_key = os.getenv("GEMINI_API_KEY")
+                if not api_key:
+                    return jsonify({"error": "Please set OPENAI_API_KEY in settings to use ATS Optimizer."})
             
-            client = genai.Client(api_key=api_key)
+            client = OpenAI(api_key=api_key, base_url=base_url)
             
             prompt = f"""
             You are an expert ATS (Applicant Tracking System) optimizer.
@@ -407,12 +412,12 @@ def run_action(action):
             Keep it brief, actionable, and formatted nicely. Do NOT output markdown headers, just bullet points.
             """
             
-            model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-            response = client.models.generate_content(
+            model_name = os.environ.get("OPENAI_MODEL", "gpt-4o")
+            response = client.chat.completions.create(
                 model=model_name,
-                contents=prompt
+                messages=[{"role": "user", "content": prompt}]
             )
-            return jsonify({"ok": True, "result": response.text})
+            return jsonify({"ok": True, "result": response.choices[0].message.content})
             
         except Exception as e:
             return jsonify({"error": f"AI error: {str(e)}"})
@@ -829,6 +834,46 @@ def clear_sent():
     return jsonify({"ok": True})
 
 
+MANUAL_JOBS_CSV = os.path.join(BASE_DIR, 'linkedin_manual_jobs.csv')
+
+
+@app.route('/api/manual_jobs')
+def get_manual_jobs():
+    """Return jobs from linkedin_manual_jobs.csv for the Manual Jobs tab."""
+    jobs = []
+    if not os.path.exists(MANUAL_JOBS_CSV):
+        return jsonify({"jobs": []})
+    try:
+        with file_lock:
+            with open(MANUAL_JOBS_CSV, 'r', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    jobs.append({
+                        "company": row.get('company', ''),
+                        "role": row.get('role', ''),
+                        "location": row.get('location', ''),
+                        "link": row.get('link', ''),
+                    })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"jobs": jobs})
+
+
+@app.route('/api/clear_manual_jobs', methods=['POST'])
+def clear_manual_jobs():
+    """Remove all entries from linkedin_manual_jobs.csv."""
+    try:
+        with file_lock:
+            if os.path.exists(MANUAL_JOBS_CSV):
+                # Rewrite with just the header
+                with open(MANUAL_JOBS_CSV, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=['company', 'role', 'location', 'link'])
+                    writer.writeheader()
+        add_log("Manual jobs cleared", "ok")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/email_history')
 def get_email_history():
     history = []
@@ -887,14 +932,15 @@ def settings():
         "YOUR_LINKEDIN", "PHONE", "EMAIL", "APP_PASSWORD", "ROLES", "LOCATIONS",
         "SEND_DELAY", "MAX_DAY", "GEMINI_API_KEY", "ZEROBOUNCE_API_KEY", "AI_CUSTOM_PROMPT",
         "AUTOPILOT_ENABLED", "AUTOPILOT_INTERVAL_MIN", "APP_BASE_URL",
-        "APIFY_API_TOKEN", "ANTHROPIC_API_KEY"
+        "APIFY_API_TOKEN", "ANTHROPIC_API_KEY", "SEARXNG_URL",
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"
     }
     
     if request.method == 'POST':
         data = request.json or {}
         for key, value in data.items():
             if key.upper() in ALLOWED_KEYS and value is not None:
-                if key.upper() in ["APP_PASSWORD", "GEMINI_API_KEY", "ZEROBOUNCE_API_KEY", "APIFY_API_TOKEN", "ANTHROPIC_API_KEY"] and value == "***":
+                if key.upper() in ["APP_PASSWORD", "GEMINI_API_KEY", "ZEROBOUNCE_API_KEY", "APIFY_API_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] and value == "***":
                     continue
                 set_key(ENV_FILE, key.upper(), str(value))
         load_dotenv(ENV_FILE, override=True)
@@ -920,9 +966,13 @@ def settings():
         "ZEROBOUNCE_API_KEY": "***" if os.getenv("ZEROBOUNCE_API_KEY") else "",
         "APIFY_API_TOKEN": "***" if os.getenv("APIFY_API_TOKEN") else "",
         "ANTHROPIC_API_KEY": "***" if os.getenv("ANTHROPIC_API_KEY") else "",
+        "OPENAI_API_KEY": "***" if os.getenv("OPENAI_API_KEY") else "",
+        "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "gpt-4o"),
         "AI_CUSTOM_PROMPT": os.getenv("AI_CUSTOM_PROMPT", ""),
         "AUTOPILOT_INTERVAL_MIN": os.getenv("AUTOPILOT_INTERVAL_MIN", "30"),
         "APP_BASE_URL":   os.getenv("APP_BASE_URL", "http://127.0.0.1:5000"),
+        "SEARXNG_URL":    os.getenv("SEARXNG_URL", "http://localhost:8080"),
     })
 
 

@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 from filelock import FileLock
+import random
 from dotenv import load_dotenv
 
 # Optional AI / Scraper imports
@@ -21,9 +22,9 @@ except ImportError:
     ApifyClient = None
 
 try:
-    from google import genai
+    from openai import OpenAI
 except ImportError:
-    genai = None
+    OpenAI = None
 
 # Fix Windows console encoding
 if sys.stdout.encoding != 'utf-8':
@@ -47,17 +48,23 @@ load_dotenv(ENV_FILE)
 
 # API Keys
 APIFY_TOKEN = os.getenv("APIFY_API_TOKEN", "")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 # We re-use some basic query logic from hunter.py
 def generate_search_queries(roles, locations):
     queries = []
-    for role in roles:
-        for loc in locations:
+    # Pass 1: Best primary query for every location and role (ensures equal distribution)
+    for loc in locations:
+        for role in roles:
             queries.append(f'"{role}" hiring HR email {loc}')
+            
+    # Pass 2: Secondary queries in case we need more results
+    for loc in locations:
+        for role in roles:
             queries.append(f'{role} "careers" contact email {loc}')
-            queries.append(f'{role} "send resume to" {loc}')
-    return queries[:10]  # limit initial queries
+            
+    return queries
 
 def load_existing_emails():
     existing = set()
@@ -111,13 +118,13 @@ def ask_ai_to_extract_leads(text, url, roles):
     """
     Passes the scraped text to Gemini to identify the company name, HR email, and evaluate the fit.
     """
-    if not genai or not GEMINI_KEY:
+    if not OpenAI or not OPENAI_KEY:
         return []
     
     retries = 3
     for attempt in range(retries):
         try:
-            client = genai.Client(api_key=GEMINI_KEY)
+            client = OpenAI(api_key=OPENAI_KEY, base_url=OPENAI_BASE_URL)
             
             prompt = f"""
             You are an AI recruitment assistant. I am scraping the web to find hiring contacts for these roles: {', '.join(roles)}.
@@ -144,12 +151,12 @@ def ask_ai_to_extract_leads(text, url, roles):
             {text}
             """
             
-            model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-            response = client.models.generate_content(
+            model_name = os.environ.get("OPENAI_MODEL", "gpt-4o")
+            response = client.chat.completions.create(
                 model=model_name,
-                contents=prompt
+                messages=[{"role": "user", "content": prompt}]
             )
-            content = response.text
+            content = response.choices[0].message.content
             # extract JSON block
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
             if json_match:
@@ -175,8 +182,8 @@ def run_ai_hunt():
     if not APIFY_TOKEN:
         print("❌ Error: Apify API Token is missing. Please add it in Settings.")
         return
-    if not GEMINI_KEY:
-        print("❌ Error: Gemini API Key is missing. Please add it in Settings.")
+    if not OPENAI_KEY:
+        print("❌ Error: OpenAI API Key is missing. Please add it in Settings.")
         return
         
     roles_input = os.environ.get("HUNTER_ROLES", "Software Developer")
@@ -186,44 +193,74 @@ def run_ai_hunt():
 
     print(f"Roles: {', '.join(roles)}")
     print(f"Locations: {', '.join(locations)}")
-    print("Connecting to Apify...")
-
-    client = ApifyClient(APIFY_TOKEN)
+    print("Starting Search Phase...")
+    
     queries = generate_search_queries(roles, locations)
-    
-    # Run Google Search Scraper
-    run_input = {
-        "queries": "\n".join(queries),
-        "resultsPerPage": 10,
-        "maxPagesPerQuery": 1,
-        "languageCode": "",
-        "mobileResults": False,
-        "includeUnfilteredResults": False,
-        "saveHtml": False,
-        "saveHtmlToKeyValueStore": False,
-        "includeIcons": False,
-    }
-    
-    print(f"Submitting {len(queries)} queries to Apify Google Search Actor...")
-    try:
-        run = client.actor("apify/google-search-scraper").call(run_input=run_input)
-    except Exception as e:
-        print(f"❌ Failed to run Apify actor: {e}")
-        return
-        
-    print("Apify scraping complete. Processing results with Gemini...")
-    
+    max_items = int(os.environ.get("HUNTER_MAX", 20))
     urls_to_visit = set()
-    dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else getattr(run, "defaultDatasetId", None)
-    for item in client.dataset(dataset_id).iterate_items():
-        org_results = item.get("organicResults", item.get("organic_results", []))
-        for res in org_results:
-            url = res.get("url")
-            if url and "linkedin" not in url and "indeed" not in url:
-                urls_to_visit.add(url)
+    
+    # 1. Use Apify + Google Search if token is present (Best quality, bypasses CAPTCHAs)
+    if APIFY_TOKEN:
+        print("Connecting to Apify for high-quality Google Search...")
+        try:
+            from apify_client import ApifyClient
+            client = ApifyClient(APIFY_TOKEN)
+            
+            # To ensure fair distribution across all roles/locations, we ask for just enough results per query
+            results_per_query = max(2, (max_items // len(queries)) + 1)
+            
+            run_input = {
+                "queries": "\n".join(queries),
+                "resultsPerPage": results_per_query,
+                "maxPagesPerQuery": 1,
+                "languageCode": "en",
+                "mobileResults": False,
+                "includeUnfilteredResults": False,
+                "saveHtml": False,
+                "saveHtmlToKeyValueStore": False,
+                "includeIcons": False,
+            }
+            print(f"Submitting {len(queries)} queries to Apify (asking for ~{results_per_query} results per query to perfectly balance locations)...")
+            run = client.actor("apify/google-search-scraper").call(run_input=run_input)
+            dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else getattr(run, "defaultDatasetId", None)
+            
+            for item in client.dataset(dataset_id).iterate_items():
+                org_results = item.get("organicResults", item.get("organic_results", []))
+                for res in org_results:
+                    url = res.get("url")
+                    if url and "linkedin" not in url and "indeed" not in url:
+                        urls_to_visit.add(url)
+                        if len(urls_to_visit) >= max_items:
+                            break
+                if len(urls_to_visit) >= max_items:
+                    break
+        except Exception as e:
+            print(f"❌ Failed to run Apify actor: {e}")
+
+    # 2. If Apify failed or didn't get enough results, fall back to native SearXNG/Python scraping
+    if len(urls_to_visit) < max_items:
+        print(f"\nUsing local multi-engine search to find {max_items - len(urls_to_visit)} more results...")
+        from core.hunter import get_result_urls, _make_session
+        session = _make_session()
+        
+        for i, q in enumerate(queries):
+            print(f"  -> Search Query [{i+1}/{len(queries)}]: {q}")
+            res_urls, engine_used = get_result_urls(q, session)
+            for u in res_urls:
+                if "linkedin" not in u and "indeed" not in u:
+                    urls_to_visit.add(u)
+
+            if len(urls_to_visit) >= max_items:
+                print(f"\n✅ Found {len(urls_to_visit)} target websites. Reached limit of {max_items}. Stopping search phase early to save API limits.")
+                break
+
+            # Random sleep to mimic human behavior and avoid rate limits
+            time.sleep(random.uniform(2.0, 4.0))
+
+    print(f"\nSearch complete. Processing results with OpenAI...")
                     
-    urls_to_visit = list(urls_to_visit)[:15] # cap at 15 for demo / cost control
-    print(f"Found {len(urls_to_visit)} unique company pages to analyze.")
+    urls_to_visit = list(urls_to_visit)[:max_items] # Enforce hard cap
+    print(f"Analyzing {len(urls_to_visit)} unique company pages.")
     
     new_leads = []
     existing_emails = load_existing_emails()
@@ -236,7 +273,7 @@ def run_ai_hunt():
             print("   Skipped: Not enough text.")
             continue
             
-        print("   Asking Gemini to extract leads...")
+        print("   Asking AI to extract leads...")
         leads = ask_ai_to_extract_leads(text, url, roles)
         
         for lead in leads:
@@ -250,9 +287,9 @@ def run_ai_hunt():
             new_leads.append(lead)
             existing_emails.add(email)
             
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-        delay = 30 if "pro" in model_name.lower() else 12
-        time.sleep(delay) # Pace requests to respect Free Tier RPM limits
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        delay = 5 # Just a small delay
+        time.sleep(delay)
     # Save to CSV
     if new_leads:
         file_exists = os.path.exists(FIRMS_CSV)
